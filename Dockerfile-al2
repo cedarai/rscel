@@ -1,0 +1,20 @@
+FROM public.ecr.aws/lambda/provided:al2
+# install dependencies
+RUN yum -y update
+RUN yum -y install curl bash gcc which openssl-devel bzip2-devel libffi-devel zlib-devel
+
+RUN cd /tmp && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs > rustup.sh && sh rustup.sh --default-host aarch64-unknown-linux-gnu --default-toolchain nightly --profile default -y
+
+# extra deps can go here
+RUN yum -y install wget tar make gzip
+#RUN yum -y groupinstall "Development Tools"
+RUN cd /tmp && wget https://www.python.org/ftp/python/3.11.4/Python-3.11.4.tgz 
+RUN cd /tmp && tar xzf Python-3.11.4.tgz 
+RUN cd /tmp/Python-3.11.4 && sed -i 's/PKG_CONFIG openssl /PKG_CONFIG openssl11 /g' configure
+RUN cd /tmp/Python-3.11.4  && ./configure --enable-optimizations &&  make altinstall 
+RUN rm -f /tmp/Python-3.11.4.tgz 
+
+RUN python3.11 -m pip install maturin
+ENV PATH="${PATH}:/root/.cargo/bin"
+
+ENTRYPOINT []
