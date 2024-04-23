@@ -1,14 +1,16 @@
 #!/usr/bin/env sh
 
+cd wasm
+
 # first delete the package folders...
 rm -rf pkg/ pkg_cjs/
 
 # build the web target
-RUSTFLAGS="-C opt-level=s" wasm-pack build --target web --release --features wasm
+RUSTFLAGS="-C opt-level=s" wasm-pack build --target web --release
 
 # next build the cjs target
 RUSTFLAGS="-C opt-level=s" wasm-pack build --out-dir pkg_cjs --out-name rscel_cjs \
-  --target nodejs --release --features wasm
+  --target nodejs --release
 
 cp -v pkg_cjs/{rscel_cjs_bg.wasm,rscel_cjs.js,rscel_cjs.d.ts} pkg/
 
