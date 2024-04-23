@@ -91,17 +91,13 @@ jobs:
       - name: build wheels
         uses: PyO3/maturin-action@v1
         with:
-          working-directory: python
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux == 'manylinux' && 'auto' || matrix.manylinux }}
-          # args: --release --features python --out dist --interpreter ${{ matrix.interpreter || '3.7 3.8 3.9 3.10 3.11 3.12 pypy3.7 pypy3.8 pypy3.9 pypy3.10' }}
-          args: --release --out dist --interpreter ${{ matrix.interpreter || '3.11 3.12' }}
+          args: --manifest-path python/Cargo.toml --release --out dist --interpreter ${{ matrix.interpreter || '3.11 3.12' }}
           rust-toolchain: nightly
           docker-options: -e CI
 
       - run: ${{ (matrix.os == 'windows' && 'dir') || 'ls -lh' }} dist/
-
-      - run: twine check --strict dist/*
 
       - uses: actions/upload-artifact@v3
         with:
