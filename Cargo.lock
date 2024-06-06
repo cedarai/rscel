@@ -821,6 +821,7 @@ dependencies = [
  "bincode",
  "chrono",
  "pyo3",
+ "pyo3-build-config",
  "rscel",
  "serde_json",
 ]
