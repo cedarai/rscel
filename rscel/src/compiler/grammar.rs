@@ -1,10 +1,20 @@
-use super::{ast_node::AstNode, tokens::FStringSegment};
+use super::{ast_node::AstNode, compiled_prog::CompiledProg, tokens::FStringSegment};
 use serde::{Deserialize, Serialize};
 
 pub trait FromUnary {
     type InputType;
 
     fn from_unary(inner: AstNode<<Self as FromUnary>::InputType>) -> Self;
+}
+
+#[inline]
+pub fn into_unary<T, U: FromUnary<InputType = T>>(
+    v: (CompiledProg, AstNode<T>),
+) -> (CompiledProg, AstNode<U>) {
+    let (prog, ast) = v;
+    let loc = ast.range();
+
+    (prog, AstNode::new(U::from_unary(ast), loc))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -14,8 +24,75 @@ pub enum Expr {
         true_clause: Box<AstNode<ConditionalOr>>,
         false_clause: Box<AstNode<Self>>,
     },
+    Match {
+        condition: Box<AstNode<Expr>>,
+        cases: Vec<AstNode<MatchCase>>,
+    },
     Unary(Box<AstNode<ConditionalOr>>),
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MatchCase {
+    pub pattern: AstNode<MatchPattern>,
+    pub expr: Box<AstNode<Expr>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MatchPattern {
+    Cmp {
+        op: AstNode<MatchCmpOp>,
+        or: AstNode<ConditionalOr>,
+    },
+    Type(AstNode<MatchTypePattern>),
+    Any(AstNode<MatchAnyPattern>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MatchCmpOp {
+    Eq,
+    Neq,
+    Gt,
+    Ge,
+    Lt,
+    Le,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MatchTypePattern {
+    Int,
+    Uint,
+    Float,
+    String,
+    Bool,
+    Bytes,
+    List,
+    Object,
+    Null,
+    Timestamp,
+    Duration,
+}
+
+impl MatchTypePattern {
+    pub fn from_type_str(s: &str) -> Self {
+        match s {
+            "int" => MatchTypePattern::Int,
+            "uint" => MatchTypePattern::Uint,
+            "float" | "double" => MatchTypePattern::Float,
+            "string" => MatchTypePattern::String,
+            "bool" => MatchTypePattern::Bool,
+            "bytes" => MatchTypePattern::Bytes,
+            "list" => MatchTypePattern::List,
+            "object" => MatchTypePattern::Object,
+            "null" => MatchTypePattern::Null,
+            "timestamp" => MatchTypePattern::Timestamp,
+            "duration" => MatchTypePattern::Duration,
+            _ => panic!("Unknown type"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MatchAnyPattern;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ConditionalOr {

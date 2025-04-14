@@ -1,6 +1,6 @@
-use chrono::{offset::Utc, DateTime, Duration, FixedOffset};
+use chrono::{offset::Utc, serde::ts_milliseconds, DateTime, Duration, FixedOffset};
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde_with::{serde_as, DeserializeAs, DurationMilliSeconds, SerializeAs};
 use std::{
     any::Any,
     cmp::Ordering,
@@ -21,13 +21,20 @@ use protobuf::{
 
 use crate::{interp::ByteCode, CelError, CelResult, CelValueDyn};
 
+use super::{cel_byte_code::CelByteCode, CelBytes};
+
+pub type CelTimeStamp = DateTime<Utc>;
+pub type CelValueVec = Vec<CelValue>;
+pub type CelValueMap = HashMap<String, CelValue>;
+
 /// The basic value of the CEL interpreter.
 ///
 /// Houses all possible types and implements most of the valid operations within the
 /// interpreter
 // Only the enum values that are also part of the language are serializable, aka int
 // because int literals can exist. If you can't represent it as part of the language
-// it doesn't need to be serialized
+// it doesn't need to be serialized. The time types will be serialized to
+// milliseconds resolution.
 #[serde_as]
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum CelValue {
@@ -36,17 +43,20 @@ pub enum CelValue {
     Float(f64),
     Bool(bool),
     String(String),
-    Bytes(Vec<u8>),
-    List(Vec<CelValue>),
-    Map(HashMap<String, CelValue>),
+    Bytes(CelBytes),
+    List(CelValueVec),
+    Map(CelValueMap),
     Null,
     Ident(String),
     Type(String),
-    #[serde(skip_serializing, skip_deserializing)]
-    TimeStamp(DateTime<Utc>),
-    #[serde(skip_serializing, skip_deserializing)]
+    #[serde(with = "ts_milliseconds")]
+    TimeStamp(CelTimeStamp),
+    #[serde(
+        serialize_with = "DurationMilliSeconds::<i64>::serialize_as",
+        deserialize_with = "DurationMilliSeconds::<i64>::deserialize_as"
+    )]
     Duration(Duration),
-    ByteCode(Vec<ByteCode>),
+    ByteCode(CelByteCode),
     #[cfg(feature = "protobuf")]
     #[serde(skip_serializing, skip_deserializing)]
     Message(Box<dyn MessageDyn>),
@@ -96,11 +106,11 @@ impl CelValue {
     }
 
     pub fn from_bytes(val: Vec<u8>) -> CelValue {
-        CelValue::Bytes(val)
+        CelValue::Bytes(val.into())
     }
 
     pub fn from_byte_slice(val: &[u8]) -> CelValue {
-        CelValue::Bytes(val.to_owned())
+        CelValue::Bytes(val.to_owned().into())
     }
 
     pub fn from_list(val: Vec<CelValue>) -> CelValue {
@@ -146,7 +156,7 @@ impl CelValue {
     }
 
     pub(crate) fn from_bytecode(val: Vec<ByteCode>) -> CelValue {
-        CelValue::ByteCode(val.to_owned())
+        CelValue::ByteCode(val.into())
     }
 
     pub fn from_dyn(val: Arc<dyn CelValueDyn>) -> CelValue {
@@ -155,6 +165,40 @@ impl CelValue {
 
     pub fn from_err(val: CelError) -> CelValue {
         CelValue::Err(val)
+    }
+
+    pub fn value_error(msg: &str) -> CelValue {
+        CelError::Value(msg.to_owned()).into()
+    }
+
+    pub fn argument_error(msg: &str) -> CelValue {
+        CelError::Argument(msg.to_owned()).into()
+    }
+
+    pub fn internal_error(msg: &str) -> CelValue {
+        CelError::Internal(msg.to_owned()).into()
+    }
+
+    pub fn invalid_op_error(msg: &str) -> CelValue {
+        CelError::InvalidOp(msg.to_owned()).into()
+    }
+
+    pub fn runtime_error(msg: &str) -> CelValue {
+        CelError::Runtime(msg.to_owned()).into()
+    }
+
+    pub fn binding_error(sym_name: &str) -> CelValue {
+        CelError::Binding {
+            symbol: sym_name.to_owned(),
+        }
+        .into()
+    }
+
+    pub fn attribute(parent_name: &str, field_name: &str) -> CelError {
+        CelError::Attribute {
+            parent: parent_name.to_string(),
+            field: field_name.to_string(),
+        }
     }
 
     pub fn into_result(self) -> CelResult<CelValue> {
@@ -507,26 +551,53 @@ impl CelValue {
     pub fn index(self, ival: CelValue) -> CelValue {
         self.error_prop_or(ival, |obj, index| match obj {
             CelValue::List(list) => {
-                let index = if let CelValue::UInt(ref index) = index {
-                    *index as usize
+                if let CelValue::UInt(index) = index {
+                    if index as usize >= list.len() {
+                        return CelValue::from_err(CelError::value("List access out of bounds"));
+                    }
+
+                    return list[index as usize].clone();
                 } else if let CelValue::Int(index) = index {
                     if index < 0 {
-                        return CelValue::from_err(CelError::value(
-                            "Negative index is not allowed",
-                        ));
+                        if cfg!(feature = "neg_index") {
+                            let adjusted_index: isize = match TryInto::<isize>::try_into(list.len())
+                            {
+                                Ok(v) => v,
+                                Err(_) => {
+                                    return CelValue::from_err(CelError::value(
+                                        "List access out of bounds",
+                                    ))
+                                }
+                            } + (index as isize);
+
+                            if adjusted_index < 0
+                                || TryInto::<usize>::try_into(adjusted_index).unwrap() >= list.len()
+                            {
+                                return CelValue::from_err(CelError::value(
+                                    "List access out of bounds 3",
+                                ));
+                            }
+
+                            list[adjusted_index as usize].clone()
+                        } else {
+                            return CelValue::from_err(CelError::value(
+                                "Negative index is not allowed",
+                            ));
+                        }
+                    } else {
+                        if index as usize >= list.len() {
+                            return CelValue::from_err(CelError::value(
+                                "List access out of bounds",
+                            ));
+                        }
+
+                        list[index as usize].clone()
                     }
-                    index as usize
                 } else {
                     return CelValue::from_err(CelError::value(
                         "List index can only be int or uint",
                     ));
-                };
-
-                if index >= list.len() {
-                    return CelValue::from_err(CelError::value("List access out of bounds"));
                 }
-
-                return list[index].clone();
             }
             CelValue::Map(map) => {
                 if let CelValue::String(index) = index {
@@ -858,7 +929,7 @@ impl<'a> From<ReflectValueRef<'a>> for CelValue {
             ReflectValueRef::F64(f) => CelValue::Float(f),
             ReflectValueRef::Bool(b) => CelValue::Bool(b),
             ReflectValueRef::String(s) => CelValue::String(s.to_string()),
-            ReflectValueRef::Bytes(b) => CelValue::Bytes(b.to_owned()),
+            ReflectValueRef::Bytes(b) => CelValue::Bytes(b.to_owned().into()),
             ReflectValueRef::Enum(desc, value) => CelValue::Enum {
                 descriptor: desc,
                 value,
@@ -892,18 +963,6 @@ impl From<i8> for CelValue {
     }
 }
 
-impl TryInto<i64> for CelValue {
-    type Error = CelError;
-
-    fn try_into(self) -> CelResult<i64> {
-        if let CelValue::Int(val) = self {
-            return Ok(val);
-        }
-
-        Err(CelError::internal("Convertion Error"))
-    }
-}
-
 impl From<u64> for CelValue {
     fn from(val: u64) -> CelValue {
         CelValue::from_uint(val)
@@ -928,33 +987,9 @@ impl From<u8> for CelValue {
     }
 }
 
-impl TryInto<u64> for CelValue {
-    type Error = CelError;
-
-    fn try_into(self) -> CelResult<u64> {
-        if let CelValue::UInt(val) = self {
-            return Ok(val);
-        }
-
-        Err(CelError::internal("Convertion Error"))
-    }
-}
-
 impl From<f64> for CelValue {
     fn from(val: f64) -> CelValue {
         CelValue::from_float(val)
-    }
-}
-
-impl TryInto<f64> for CelValue {
-    type Error = CelError;
-
-    fn try_into(self) -> CelResult<f64> {
-        if let CelValue::Float(val) = self {
-            return Ok(val);
-        }
-
-        Err(CelError::internal("Convertion Error"))
     }
 }
 
@@ -964,15 +999,9 @@ impl From<bool> for CelValue {
     }
 }
 
-impl TryInto<bool> for CelValue {
-    type Error = CelError;
-
-    fn try_into(self) -> CelResult<bool> {
-        if let CelValue::Bool(val) = self {
-            return Ok(val);
-        }
-
-        Err(CelError::internal("Convertion Error"))
+impl From<Duration> for CelValue {
+    fn from(val: Duration) -> CelValue {
+        CelValue::from_duration(val)
     }
 }
 
@@ -988,39 +1017,9 @@ impl From<String> for CelValue {
     }
 }
 
-impl TryInto<String> for CelValue {
-    type Error = CelError;
-
-    fn try_into(self) -> CelResult<String> {
-        if let CelValue::String(val) = self {
-            return Ok(val);
-        }
-
-        Err(CelError::internal("Convertion Error"))
-    }
-}
-
 impl From<&[u8]> for CelValue {
     fn from(val: &[u8]) -> CelValue {
         CelValue::from_bytes(val.to_owned())
-    }
-}
-
-impl From<Vec<u8>> for CelValue {
-    fn from(val: Vec<u8>) -> CelValue {
-        CelValue::Bytes(val).into()
-    }
-}
-
-impl TryInto<Vec<u8>> for CelValue {
-    type Error = CelError;
-
-    fn try_into(self) -> CelResult<Vec<u8>> {
-        if let CelValue::Bytes(val) = self {
-            return Ok(val);
-        }
-
-        Err(CelError::internal("Convertion Error"))
     }
 }
 
@@ -1030,9 +1029,73 @@ impl From<&[CelValue]> for CelValue {
     }
 }
 
-impl From<Vec<CelValue>> for CelValue {
-    fn from(val: Vec<CelValue>) -> CelValue {
-        CelValue::List(val).into()
+impl From<HashMap<String, CelValue>> for CelValue {
+    fn from(val: HashMap<String, CelValue>) -> CelValue {
+        CelValue::from_map(val)
+    }
+}
+
+impl From<DateTime<Utc>> for CelValue {
+    fn from(val: DateTime<Utc>) -> CelValue {
+        CelValue::from_timestamp(val)
+    }
+}
+
+impl From<DateTime<FixedOffset>> for CelValue {
+    fn from(val: DateTime<FixedOffset>) -> CelValue {
+        CelValue::from_timestamp(val.into())
+    }
+}
+impl From<Vec<ByteCode>> for CelValue {
+    fn from(val: Vec<ByteCode>) -> CelValue {
+        CelValue::from_bytecode(val)
+    }
+}
+impl TryInto<u64> for CelValue {
+    type Error = CelError;
+
+    fn try_into(self) -> CelResult<u64> {
+        if let CelValue::UInt(val) = self {
+            return Ok(val);
+        }
+
+        Err(CelError::internal("Convertion Error"))
+    }
+}
+
+impl TryInto<f64> for CelValue {
+    type Error = CelError;
+
+    fn try_into(self) -> CelResult<f64> {
+        if let CelValue::Float(val) = self {
+            return Ok(val);
+        }
+
+        Err(CelError::internal("Convertion Error"))
+    }
+}
+
+impl TryInto<bool> for CelValue {
+    type Error = CelError;
+
+    fn try_into(self) -> CelResult<bool> {
+        if let CelValue::Bool(val) = self {
+            return Ok(val);
+        }
+
+        Err(CelError::internal("Convertion Error"))
+    }
+}
+
+impl TryInto<String> for CelValue {
+    type Error = CelError;
+
+    fn try_into(self) -> CelResult<String> {
+        if let CelValue::String(val) = self {
+            return Ok(val);
+        }
+
+        Err(CelError::internal("Convertion Error"))
     }
 }
 
@@ -1048,12 +1111,6 @@ impl TryInto<Vec<CelValue>> for CelValue {
     }
 }
 
-impl From<HashMap<String, CelValue>> for CelValue {
-    fn from(val: HashMap<String, CelValue>) -> CelValue {
-        CelValue::from_map(val)
-    }
-}
-
 impl TryInto<HashMap<String, CelValue>> for CelValue {
     type Error = CelError;
 
@@ -1063,18 +1120,6 @@ impl TryInto<HashMap<String, CelValue>> for CelValue {
         }
 
         Err(CelError::internal("Convertion Error"))
-    }
-}
-
-impl From<DateTime<Utc>> for CelValue {
-    fn from(val: DateTime<Utc>) -> CelValue {
-        CelValue::from_timestamp(val)
-    }
-}
-
-impl From<DateTime<FixedOffset>> for CelValue {
-    fn from(val: DateTime<FixedOffset>) -> CelValue {
-        CelValue::from_timestamp(val.into())
     }
 }
 
@@ -1090,9 +1135,15 @@ impl TryInto<DateTime<Utc>> for CelValue {
     }
 }
 
-impl From<Duration> for CelValue {
-    fn from(val: Duration) -> CelValue {
-        CelValue::from_duration(val)
+impl TryInto<i64> for CelValue {
+    type Error = CelError;
+
+    fn try_into(self) -> CelResult<i64> {
+        if let CelValue::Int(val) = self {
+            return Ok(val);
+        }
+
+        Err(CelError::internal("Convertion Error"))
     }
 }
 
@@ -1108,18 +1159,12 @@ impl TryInto<Duration> for CelValue {
     }
 }
 
-impl From<Vec<ByteCode>> for CelValue {
-    fn from(val: Vec<ByteCode>) -> CelValue {
-        CelValue::from_bytecode(val)
-    }
-}
-
 impl TryInto<Vec<ByteCode>> for CelValue {
     type Error = CelError;
 
     fn try_into(self) -> CelResult<Vec<ByteCode>> {
         if let CelValue::ByteCode(val) = self {
-            return Ok(val);
+            return Ok(val.into());
         }
 
         Err(CelError::internal("Convertion Error"))
@@ -1219,8 +1264,8 @@ impl Add for CelValue {
                 CelValue::Bytes(val1) => {
                     if let CelValue::Bytes(val2) = rhs {
                         let mut res = val1;
-                        res.extend_from_slice(&val2);
-                        return CelValue::from_byte_slice(res.as_ref());
+                        res.extend(val2.into_vec());
+                        return CelValue::Bytes(res);
                     }
                 }
                 CelValue::List(val1) => {
@@ -1523,14 +1568,37 @@ impl fmt::Display for CelValue {
     }
 }
 
+impl From<CelByteCode> for CelValue {
+    fn from(value: CelByteCode) -> Self {
+        CelValue::ByteCode(value)
+    }
+}
+
+impl From<CelBytes> for CelValue {
+    fn from(value: CelBytes) -> Self {
+        CelValue::Bytes(value)
+    }
+}
+
 impl From<CelError> for CelValue {
     fn from(value: CelError) -> Self {
         CelValue::Err(value)
     }
 }
 
-impl From<CelResult<CelValue>> for CelValue {
-    fn from(value: CelResult<CelValue>) -> Self {
+impl<T: Into<CelValue>> From<Vec<T>> for CelValue {
+    fn from(value: Vec<T>) -> Self {
+        CelValue::List(
+            value
+                .into_iter()
+                .map(|i| i.into())
+                .collect::<Vec<CelValue>>(),
+        )
+    }
+}
+
+impl<T: Into<CelValue>> From<CelResult<T>> for CelValue {
+    fn from(value: CelResult<T>) -> Self {
         match value {
             Ok(val) => val.into(),
             Err(e) => e.into(),
