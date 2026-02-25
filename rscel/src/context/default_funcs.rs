@@ -1,6 +1,8 @@
 use super::bind_context::RsCelFunction;
 use crate::{BindContext, CelError, CelValue};
 
+mod format;
+mod list;
 mod math;
 mod size;
 mod sort;
@@ -12,6 +14,11 @@ const DEFAULT_FUNCS: &[(&str, &'static RsCelFunction)] = &[
     ("contains", &string::contains::contains),
     ("containsI", &string::contains::contains_i),
     ("size", &size::size),
+    ("flatten", &list::flatten::flatten),
+    ("reverse", &list::reverse::reverse),
+    ("slice", &list::slice::slice),
+    ("sum", &list::sum_impl),
+    ("unique", &list::unique::unique),
     ("sort", &sort::sort),
     ("startsWith", &string::starts_with::starts_with),
     ("endsWith", &string::ends_with::ends_with),
@@ -24,8 +31,16 @@ const DEFAULT_FUNCS: &[(&str, &'static RsCelFunction)] = &[
         &string::match_replace_once::match_replace_once,
     ),
     ("matchReplace", &string::match_replace::match_replace),
+    ("indexOf", &string::index_of::index_of),
+    ("lastIndexOf", &string::index_of::last_index_of),
+    ("matchCapturesAll", &string::match_captures_all::match_captures_all),
+    ("padEnd", &string::pad_end_impl),
+    ("padStart", &string::pad_start_impl),
+    ("repeat", &string::repeat::repeat),
+    ("replaceI", &string::replace_i::replace_i),
     ("toLower", &string::to_lower_impl),
     ("toUpper", &string::to_upper_impl),
+    ("trimMatches", &string::trim_matches::trim_matches),
     ("remove", &string::remove::remove),
     ("replace", &string::replace::replace),
     ("rsplit", &string::split::rsplit),
@@ -47,15 +62,20 @@ const DEFAULT_FUNCS: &[(&str, &'static RsCelFunction)] = &[
         &string::split_whitespace::split_whitespace,
     ),
     ("abs", &math::abs::abs),
-    ("sqrt", &math::sqrt::sqrt),
-    ("pow", &math::pow::pow),
-    ("log", &math::log::log),
-    ("lg", &math::lg::lg),
+    ("cbrt", &math::cbrt::cbrt),
     ("ceil", &math::ceil::ceil),
+    ("clamp", &clamp_impl),
+    ("exp", &math::exp::exp),
     ("floor", &math::floor::floor),
-    ("round", &math::round::round),
-    ("min", &min_impl),
+    ("lg", &math::lg::lg),
+    ("ln", &math::ln::ln),
+    ("log", &math::log::log),
     ("max", &max_impl),
+    ("min", &min_impl),
+    ("pow", &math::pow::pow),
+    ("round", &math::round::round),
+    ("sqrt", &math::sqrt::sqrt),
+    ("trunc", &math::trunc::trunc),
     ("getDate", &time_funcs::get_date::get_date),
     (
         "getDayOfMonth",
@@ -78,9 +98,25 @@ const DEFAULT_FUNCS: &[(&str, &'static RsCelFunction)] = &[
     ("getMinutes", &time_funcs::get_minutes::get_minutes),
     ("getMonth", &time_funcs::get_month::get_month),
     ("getSeconds", &time_funcs::get_seconds::get_seconds),
+    ("setDate", &time_funcs::set_date::set_date),
+    ("setFullYear", &time_funcs::set_full_year::set_full_year),
+    ("setHours", &time_funcs::set_hours::set_hours),
+    (
+        "setMilliseconds",
+        &time_funcs::set_milliseconds::set_milliseconds,
+    ),
+    ("setMinutes", &time_funcs::set_minutes::set_minutes),
+    ("setMonth", &time_funcs::set_month::set_month),
+    ("setSeconds", &time_funcs::set_seconds::set_seconds),
+    ("startOfDay", &time_funcs::start_of_day::start_of_day),
+    ("startOfMonth", &time_funcs::start_of_month::start_of_month),
+    ("startOfYear", &time_funcs::start_of_year::start_of_year),
+    ("toRfc3339", &time_funcs::to_rfc3339::to_rfc3339),
+    ("toTimestampString", &time_funcs::to_rfc3339::to_rfc3339),
     ("now", &now_impl),
     ("zip", &zip_impl),
     ("uomConvert", &uom::uom_convert),
+    ("format", &format::format),
 ];
 
 pub fn load_default_funcs(exec_ctx: &mut BindContext) {
@@ -89,51 +125,59 @@ pub fn load_default_funcs(exec_ctx: &mut BindContext) {
     }
 }
 
-fn min_impl(_this: CelValue, args: Vec<CelValue>) -> CelValue {
-    if args.len() == 0 {
-        return CelValue::from_err(CelError::argument("min() requires at lease one argument"));
+fn min_impl(this: CelValue, args: Vec<CelValue>) -> CelValue {
+    let vals: &[CelValue] = if let CelValue::List(ref l) = this {
+        l.as_slice()
+    } else {
+        args.as_slice()
+    };
+
+    if vals.is_empty() {
+        return CelValue::from_err(CelError::argument("min() requires at least one argument"));
     }
 
-    let mut curr_min: Option<&CelValue> = None;
-
-    for val in args.iter() {
-        match curr_min {
-            Some(curr) => {
-                if val.clone().lt(curr.clone()).is_true() {
-                    curr_min = Some(&val);
-                }
-            }
-            None => curr_min = Some(&val),
+    let mut curr_min = &vals[0];
+    for val in &vals[1..] {
+        if val.clone().lt(curr_min.clone()).is_true() {
+            curr_min = val;
         }
     }
-
-    match curr_min {
-        Some(v) => v.clone(),
-        None => CelValue::from_null(),
-    }
+    curr_min.clone()
 }
 
-fn max_impl(_this: CelValue, args: Vec<CelValue>) -> CelValue {
-    if args.len() == 0 {
-        return CelValue::from_err(CelError::argument("max() requires at lease one argument"));
+fn max_impl(this: CelValue, args: Vec<CelValue>) -> CelValue {
+    let vals: &[CelValue] = if let CelValue::List(ref l) = this {
+        l.as_slice()
+    } else {
+        args.as_slice()
+    };
+
+    if vals.is_empty() {
+        return CelValue::from_err(CelError::argument("max() requires at least one argument"));
     }
 
-    let mut curr_max: Option<&CelValue> = None;
-
-    for val in args.iter() {
-        match curr_max {
-            Some(curr) => {
-                if val.clone().gt(curr.clone()).is_true() {
-                    curr_max = Some(val);
-                }
-            }
-            None => curr_max = Some(val),
+    let mut curr_max = &vals[0];
+    for val in &vals[1..] {
+        if val.clone().gt(curr_max.clone()).is_true() {
+            curr_max = val;
         }
     }
+    curr_max.clone()
+}
 
-    match curr_max {
-        Some(v) => v.clone(),
-        None => CelValue::from_null(),
+fn clamp_impl(_this: CelValue, args: Vec<CelValue>) -> CelValue {
+    if args.len() != 3 {
+        return CelValue::from_err(CelError::argument(
+            "clamp() requires exactly three arguments: value, min, max",
+        ));
+    }
+    let (val, lo, hi) = (&args[0], &args[1], &args[2]);
+    if val.clone().lt(lo.clone()).is_true() {
+        lo.clone()
+    } else if val.clone().gt(hi.clone()).is_true() {
+        hi.clone()
+    } else {
+        val.clone()
     }
 }
 
