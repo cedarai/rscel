@@ -1,5 +1,8 @@
 use proc_macro2::Span;
-use syn::{punctuated::Punctuated, token, Arm, Ident, ItemFn, Pat, PatPath, PatTuple, PathSegment};
+use syn::{
+    punctuated::Punctuated, token, Arm, Attribute, Ident, ItemFn, Pat, PatPath, PatTuple,
+    PathSegment,
+};
 
 use super::{dispatch_arg::DispatchArg, dispatch_arg_type::DispatchArgType};
 
@@ -46,17 +49,38 @@ impl DispatchFunc {
     }
 
     pub fn as_arm(&self, max_args: usize) -> Arm {
+        let attrs: Vec<Attribute> = self
+            .func
+            .attrs
+            .iter()
+            .filter(|attr| {
+                let path = attr.path();
+                path.is_ident("cfg") || path.is_ident("cfg_attr")
+            })
+            .cloned()
+            .collect();
+
         let mut elems = Vec::new();
         let mut args: Vec<syn::Expr> = Vec::new();
         let mut arg_index = 0usize;
 
         if self.args.len() > arg_index && self.args[arg_index].is_this() {
-            elems.push(Pat::TupleStruct(self.args[0].as_tuple_struct("this")));
-            args.push(syn::Expr::Path(syn::ExprPath {
-                attrs: Vec::new(),
-                qself: None,
-                path: Ident::new("this", Span::call_site()).into(),
-            }));
+            elems.push(self.args[0].as_pat("this"));
+
+            if matches!(self.args[0].arg_type(), DispatchArgType::Null) {
+                args.push(syn::Expr::Tuple(syn::ExprTuple {
+                    attrs: Vec::new(),
+                    paren_token: token::Paren::default(),
+                    elems: Punctuated::new(),
+                }))
+            } else {
+                args.push(syn::Expr::Path(syn::ExprPath {
+                    attrs: Vec::new(),
+                    qself: None,
+                    path: Ident::new("this", Span::call_site()).into(),
+                }));
+            }
+
             arg_index += 1;
         } else {
             elems.push(Pat::Path(PatPath {
@@ -103,18 +127,29 @@ impl DispatchFunc {
                 }));
             } else {
                 let a = format!("a{}", i);
-                elems.push(Pat::TupleStruct(self.args[arg_index].as_tuple_struct(&a)));
-                args.push(syn::Expr::Path(syn::ExprPath {
-                    attrs: Vec::new(),
-                    qself: None,
-                    path: Ident::new(&a, Span::call_site()).into(),
-                }));
+                elems.push(self.args[arg_index].as_pat(&a));
+
+                // For Null, pass () as the argument since there's no bound value
+                if matches!(self.args[arg_index].arg_type(), DispatchArgType::Null) {
+                    args.push(syn::Expr::Tuple(syn::ExprTuple {
+                        attrs: Vec::new(),
+                        paren_token: token::Paren::default(),
+                        elems: Punctuated::new(),
+                    }));
+                } else {
+                    args.push(syn::Expr::Path(syn::ExprPath {
+                        attrs: Vec::new(),
+                        qself: None,
+                        path: Ident::new(&a, Span::call_site()).into(),
+                    }));
+                }
+
                 arg_index += 1;
             }
         }
 
         Arm {
-            attrs: Vec::new(),
+            attrs,
             pat: Pat::Tuple(PatTuple {
                 attrs: Vec::new(),
                 paren_token: token::Paren::default(),

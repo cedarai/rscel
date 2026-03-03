@@ -1,4 +1,4 @@
-mod helpers;
+pub mod helpers;
 
 pub mod get_date;
 pub mod get_day_of_month;
@@ -10,3 +10,14 @@ pub mod get_milliseconds;
 pub mod get_minutes;
 pub mod get_month;
 pub mod get_seconds;
+pub mod set_date;
+pub mod set_full_year;
+pub mod set_hours;
+pub mod set_milliseconds;
+pub mod set_minutes;
+pub mod set_month;
+pub mod set_seconds;
+pub mod start_of_day;
+pub mod start_of_month;
+pub mod start_of_year;
+pub mod to_rfc3339;

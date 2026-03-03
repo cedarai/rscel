@@ -269,8 +269,8 @@ impl CelValue {
         CelValue::from_type("list")
     }
 
-    pub fn map_type() -> CelValue {
-        CelValue::from_type("map")
+    pub fn obj_type() -> CelValue {
+        CelValue::from_type("obj")
     }
 
     pub fn null_type() -> CelValue {
@@ -643,7 +643,7 @@ impl CelValueDyn for CelValue {
             CelValue::String(_) => CelValue::string_type(),
             CelValue::Bytes(_) => CelValue::bytes_type(),
             CelValue::List(_) => CelValue::list_type(),
-            CelValue::Map(_) => CelValue::map_type(),
+            CelValue::Map(_) => CelValue::obj_type(),
             CelValue::Null => CelValue::null_type(),
             CelValue::Ident(_) => CelValue::ident_type(),
             CelValue::Type(_) => CelValue::type_type(),
@@ -670,11 +670,11 @@ impl CelValueDyn for CelValue {
         let self_type = self.as_type();
 
         match self {
-            CelValue::Map(ref map) => match map.get(key) {
+            CelValue::Map(map) => match map.get(key) {
                 Some(val) => val.clone(),
                 None => CelValue::from_err(CelError::attribute("obj", key)),
             },
-            CelValue::Dyn(ref d) => d.access(key),
+            CelValue::Dyn(d) => d.access(key),
             #[cfg(feature = "protobuf")]
             CelValue::Message(msg) => {
                 let desc = msg.descriptor_dyn();

@@ -1,6 +1,6 @@
 use crate::{
     compiler::{compiler::CelCompiler, string_tokenizer::StringTokenizer},
-    BindContext, CelContext, CelError, CelValue, Program,
+    BindContext, ByteCode, CelContext, CelError, CelValue, Program,
 };
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde_json::Value;
@@ -39,6 +39,8 @@ fn test_contains() {
 #[test_case("[1, 2, 3].map(x, x+2)", vec![3, 4, 5]; "test map")]
 #[test_case("[1, 2, 3].map(x, x % 2 == 1, x + 1)", vec![2, 4]; "test map 2")]
 #[test_case("[1,2,3][1]", 2; "array index")]
+#[test_case("[[1, 2], [3, 4]][1][0]", 3; "nested list chained index")]
+#[test_case("{'a': {'b': 42}}['a']['b']", 42; "nested map chained index")]
 #[test_case("{\"foo\": 3}.foo", 3; "obj dot access")]
 #[test_case("size([1,2,3,4])", 4u64; "test list size")]
 #[test_case("size('foo')", 3u64; "size string")]
@@ -103,8 +105,27 @@ fn test_contains() {
 #[test_case("round(2.5)", 3; "round up")]
 #[test_case("round(3)", 3; "round int")]
 #[test_case("round(3u)", 3u64; "round uint")]
-#[test_case("min(1,2,3)", 1; "min")]
-#[test_case("max(1,2,3)", 3; "max")]
+#[test_case("min(1,2,3)", 1; "min variadic")]
+#[test_case("max(1,2,3)", 3; "max variadic")]
+#[test_case("[3,1,2].min()", 1; "min list method")]
+#[test_case("[3,1,2].max()", 3; "max list method")]
+#[test_case("ln(1.0)", 0.0; "ln float")]
+#[test_case("ln(1)", 0.0; "ln int")]
+#[test_case("ln(1u)", 0.0; "ln uint")]
+#[test_case("exp(0.0)", 1.0; "exp float")]
+#[test_case("exp(0)", 1.0; "exp int")]
+#[test_case("exp(0u)", 1.0; "exp uint")]
+#[test_case("cbrt(27.0)", 3.0; "cbrt float")]
+#[test_case("cbrt(8)", 2.0; "cbrt int")]
+#[test_case("cbrt(8u)", 2.0; "cbrt uint")]
+#[test_case("trunc(3.7)", 3; "trunc positive")]
+#[test_case("trunc(-3.7)", -3; "trunc negative")]
+#[test_case("trunc(5)", 5; "trunc int")]
+#[test_case("trunc(5u)", 5u64; "trunc uint")]
+#[test_case("clamp(5, 1, 10)", 5; "clamp in range")]
+#[test_case("clamp(0, 1, 10)", 1; "clamp below min")]
+#[test_case("clamp(11, 1, 10)", 10; "clamp above max")]
+#[test_case("clamp(3.0, 1.0, 5.0)", 3.0; "clamp float in range")]
 #[test_case("[1,2,3].reduce(curr, next, curr + next, 0)", 6; "reduce")]
 #[test_case("{}", HashMap::new(); "empty object")]
 #[test_case("[]", Vec::<CelValue>::new(); "empy list")]
@@ -228,7 +249,8 @@ fn test_contains() {
 #[test_case("'123M5'.replace('M', '4')", "12345"; "string replace")]
 #[test_case("'12131415'.rsplit('1')", vec!["5", "4", "3", "2", ""]; "string rsplit")]
 #[test_case("'12131415'.split('1')", vec!["", "2", "3", "4", "5"]; "string split")]
-#[test_case("'123456'.splitAt(3)", vec!["123", "456"]; "string splitAt")]
+#[test_case("'123456'.splitAt(3)", vec!["123", "456"]; "string splitAt signed index")]
+#[test_case("'123456'.splitAt(3u)", vec!["123", "456"]; "string splitAt unsigned index")]
 #[test_case("'12345LF'.trimEndMatches('LF')", "12345"; "string trimEndMatches")]
 #[test_case("'LF12345'.trimStartMatches('LF')", "12345"; "string trimStartMatches")]
 #[test_case("zip([1, 2, 3], ['a', 'b', 'c'])",
@@ -240,6 +262,103 @@ fn test_contains() {
 #[test_case(r#"'123abc555'.matchCaptures('([0-9]+)([a-z]+)555')"#, vec!["123abc555", "123", "abc"]; "string match captures")]
 #[test_case("'abab'.matchReplaceOnce('(?<first>a)(?<last>b)', '${last}${first}')", "baab"; "string matchReplaceOnce")]
 #[test_case("'abab'.matchReplace('(?<first>a)(?<last>b)', '${last}${first}')", "baba"; "string matchReplace")]
+#[test_case("'hello world'.indexOf('world')", 6i64; "string indexOf found")]
+#[test_case("'hello world'.indexOf('xyz')", -1i64; "string indexOf not found")]
+#[test_case("'abcabc'.lastIndexOf('b')", 4i64; "string lastIndexOf found")]
+#[test_case("'abcabc'.lastIndexOf('xyz')", -1i64; "string lastIndexOf not found")]
+#[test_case("'ha'.repeat(3)", "hahaha"; "string repeat int")]
+#[test_case("'ab'.repeat(0)", ""; "string repeat zero")]
+#[test_case("'Hello World'.replaceI('hello', 'Hi')", "Hi World"; "string replaceI case insensitive")]
+#[test_case("'HELLO hello'.replaceI('hello', 'bye')", "bye bye"; "string replaceI replaces all")]
+#[test_case("'--hello--'.trimMatches('-')", "hello"; "string trimMatches")]
+#[test_case("'hello'.padStart(8)", "   hello"; "string padStart space")]
+#[test_case("'hello'.padStart(8, '0')", "000hello"; "string padStart custom char")]
+#[test_case("'hello'.padStart(3)", "hello"; "string padStart noop when already long enough")]
+#[test_case("'hello'.padEnd(8)", "hello   "; "string padEnd space")]
+#[test_case("'hello'.padEnd(8, '!')", "hello!!!"; "string padEnd custom char")]
+#[test_case("'hello'.padEnd(3)", "hello"; "string padEnd noop when already long enough")]
+// list functions
+#[test_case("[3, 1, 2].reverse()", vec![2, 1, 3]; "list reverse")]
+#[test_case("[[1, 2], [3, 4]].flatten()", vec![1, 2, 3, 4]; "list flatten one level")]
+#[test_case("[1, [2, [3]]].flatten()", CelValue::from_val_slice(&[1.into(), 2.into(), CelValue::from_val_slice(&[3.into()])]); "list flatten one level only")]
+#[test_case("[1, 2, 1, 3, 2].unique()", vec![1, 2, 3]; "list unique")]
+#[test_case("[1, 2, 3, 4, 5].slice(1, 3)", vec![2, 3]; "list slice")]
+#[test_case("[1, 2, 3, 4, 5].slice(0, -1)", vec![1, 2, 3, 4]; "list slice negative end")]
+#[test_case("[1, 2, 3].sum()", 6i64; "list sum ints")]
+#[test_case("[1.0, 2.5, 3.5].sum()", 7.0f64; "list sum floats")]
+// macros
+#[test_case("[1, 2, 3, 4, 5].find(x, x > 3)", 4i64; "macro find first match")]
+#[test_case("[1, 2, 3].find(x, x > 10)", CelValue::Null; "macro find no match returns null")]
+#[test_case("[1, 2, 3, 4, 5].count(x, x % 2 == 0)", 2i64; "macro count even")]
+#[test_case("[1, 2, 3].count(x, x > 0)", 3i64; "macro count all match")]
+#[test_case("[[1, 2], [3, 4]].flatMap(x, x)", vec![1, 2, 3, 4]; "macro flatMap identity")]
+#[test_case("[1, 2, 3].flatMap(x, [x, x * 10])", vec![1, 10, 2, 20, 3, 30]; "macro flatMap expand")]
+// timestamps
+#[test_case("timestamp('2024-07-15T14:32:07Z').startOfDay().toRfc3339()", "2024-07-15T00:00:00+00:00"; "startOfDay UTC")]
+#[test_case("timestamp('2024-07-15T14:32:07Z').startOfDay('America/New_York').toRfc3339()", "2024-07-15T04:00:00+00:00"; "startOfDay with timezone")]
+#[test_case("timestamp('2024-07-15T14:32:07Z').startOfMonth().toRfc3339()", "2024-07-01T00:00:00+00:00"; "startOfMonth UTC")]
+#[test_case("timestamp('2024-07-15T14:32:07Z').startOfMonth('America/New_York').toRfc3339()", "2024-07-01T04:00:00+00:00"; "startOfMonth with timezone")]
+#[test_case("timestamp('2024-07-15T14:32:07Z').startOfYear().toRfc3339()", "2024-01-01T00:00:00+00:00"; "startOfYear UTC")]
+#[test_case("timestamp('2024-07-15T14:32:07Z').startOfYear('America/New_York').toRfc3339()", "2024-01-01T05:00:00+00:00"; "startOfYear with timezone")]
+#[test_case("timestamp('2023-01-01T04:00:00-01:00').toRfc3339()", "2023-01-01T05:00:00+00:00"; "timestamp to_rfc3339")]
+#[test_case("timestamp('2023-01-01T04:00:00-01:00').toRfc3339('EST')", "2023-01-01T00:00:00-05:00"; "timestamp to_rfc3339 with timezone EST")]
+#[test_case("timestamp('2023-01-01T04:00:00-01:00').toRfc3339('America/New_York')", "2023-01-01T00:00:00-05:00"; "timestamp to_rfc3339 with timezone America/New_York")]
+#[test_case(r#"timestamp("2026-02-19T13:00:04-00:00").format("%B %d, %Y %H:%M")"#, "February 19, 2026 13:00"; "format timestamp")]
+#[test_case(r#"timestamp("2026-02-19T13:00:04-00:00").format("America/Los_Angeles", "%B %d, %Y %H:%M")"#, "February 19, 2026 05:00"; "format timestamp w/ timezone")]
+#[test_case("type([]) == list", true; "list type")]
+#[test_case("type({}) == obj", true; "obj type")]
+#[test_case("format(42, 'd')", "42"; "format int default")]
+#[test_case("format(42, '08d')", "00000042"; "format int zero padded")]
+#[test_case("format(42, 'x')", "2a"; "format int hex lower arg form")]
+#[test_case("format(42, 'X')", "2A"; "format int hex upper")]
+#[test_case("format(42, 'o')", "52"; "format int octal")]
+#[test_case("format(42, 'b')", "101010"; "format int binary")]
+#[test_case("format(255, '08b')", "11111111"; "format int binary zero padded")]
+#[test_case("format(3.14159, '.2f')", "3.14"; "format float fixed 2dp")]
+#[test_case("format(3.14159, '.4f')", "3.1416"; "format float fixed 4dp")]
+#[test_case("format(0.000042, '.2e')", "4.20e-5"; "format float scientific lower arg form")]
+#[test_case("format(0.000042, '.2E')", "4.20E-5"; "format float scientific upper")]
+#[test_case("format(1234567.0, '.2f')", "1234567.00"; "format float large fixed")]
+#[test_case("format(1.0, '10.3f')", "     1.000"; "format float space padded")]
+#[test_case("format(1.0, '010.3f')", "000001.000"; "format float zero padded")]
+#[test_case("true.format('')", "true"; "format bool true")]
+#[test_case("false.format('')", "false"; "format bool false")]
+#[test_case("format(true, 'ignored')", "true"; "format bool spec ignored arg form")]
+#[test_case("'hello world'.format('.5')", "hello"; "format string truncate")]
+#[test_case("'hello world'.format('.5e')", "hello…"; "format string truncate ellipsis")]
+#[test_case("format('hello', '.10')", "hello"; "format string truncate noop shorter than width")]
+#[test_case("'hello world'.format('')", "hello world"; "format string no spec")]
+#[test_case("'café'.format('.3')", "caf"; "format string truncate unicode")]
+#[test_case("'café'.format('.3e')", "caf…"; "format string truncate unicode ellipsis")]
+#[test_case("b'deadbeef'.format('')", "6465616462656566"; "format bytes default this form")]
+#[test_case("format(b'\\x00\\xff', '')", "00ff"; "format bytes hex arg form")]
+#[test_case("format(null, '')", "null"; "format null arg form")]
+#[test_case("format(null)", "null"; "format null no spec")]
+#[test_case("duration('125s').format('seconds')", "125s"; "format duration seconds unit")]
+#[test_case("duration('125s').format('minutes')", "2m"; "format duration minutes floor")]
+#[test_case("duration('3600s').format('hours')", "1h"; "format duration hours")]
+#[test_case("duration('86400s').format('days')", "1d"; "format duration days")]
+#[test_case("duration('90061s').format('{d}d {h}h {m}m {s}s')", "1d 1h 1m 1s"; "format duration template all units")]
+#[test_case("duration('3754s').format('{h}h {m}m {s}s')", "1h 2m 34s"; "format duration template hms")]
+#[test_case("duration('65s').format('{m}m {s}s')", "1m 5s"; "format duration template ms")]
+#[test_case("duration('30s').format('{h}h {m}m {s}s')", "0h 0m 30s"; "format duration template zeros shown")]
+#[test_case("duration('125s').format('')", "2m"; "format duration default largest unit")]
+#[test_case("format(duration('30s'), 's')", "30s"; "format duration seconds arg form")]
+#[test_case("[1, 2, 3].format('')", "[1, 2, 3]"; "format list ints")]
+#[test_case("format([true, 'hello', 1])", "[true, hello, 1]"; "format list mixed")]
+#[test_case("format([[1, 2], [3, 4]])", "[[1, 2], [3, 4]]"; "format list nested")]
+#[test_case("{'a': 1}.format('')", "{a: 1}"; "format map this form")]
+#[test_case("format({'x': true})", "{x: true}"; "format map arg form")]
+#[test_case("format(42, '10d')", "        42"; "format int space padded right aligned")]
+#[test_case("format(42, '010d')", "0000000042"; "format int zero padded width 10")]
+#[test_case("format(3.14, '10.2f')", "      3.14"; "format float space padded width 10 prec 2")]
+#[test_case("format(3.14, '010.2f')", "0000003.14"; "format float zero padded width 10 prec 2")]
+#[test_case("format(-3.14, '010.2f')", "-000003.14"; "format float zero padded negative width 10 prec 2")]
+#[test_case("format(1.0, '010.3f')", "000001.000"; "format float zero padded width 10 prec 3")]
+#[test_case("format(255, '010x')", "00000000ff"; "format int hex zero padded width 10")]
+#[test_case("format(255, '10x')", "        ff"; "format int hex space padded width 10")]
+#[test_case("format(7, '08b')", "00000111"; "format int binary zero padded width 8")]
+#[test_case("format(7, '8b')", "     111"; "format int binary space padded width 8")]
 fn test_equation(prog: &str, res: impl Into<CelValue>) {
     let mut ctx = CelContext::new();
     let exec_ctx = BindContext::new();
@@ -261,6 +380,44 @@ fn test_timestamp() {
 
     let dt = DateTime::parse_from_rfc3339("2023-04-20T12:00:00Z").unwrap();
     assert_eq!(eval_res, dt.into());
+}
+
+#[test]
+fn test_timestamp_now() {
+    let mut ctx = CelContext::new();
+    let exec_ctx = BindContext::new();
+
+    ctx.add_program_str("main", "timestamp()").unwrap();
+    let eval_res = ctx.exec("main", &exec_ctx).unwrap();
+
+    let CelValue::TimeStamp(ts) = eval_res else {
+        panic!("timestamp() without arguments should return a timestamp");
+    };
+
+    let now = Utc::now();
+    let delta = now.signed_duration_since(ts).num_seconds().abs();
+    assert!(
+        delta <= 5,
+        "timestamp() should return current time. Delta {} seconds",
+        delta
+    );
+}
+
+#[test]
+fn test_now_function() {
+    let mut ctx = CelContext::new();
+    let exec_ctx = BindContext::new();
+
+    ctx.add_program_str("main", "now()").unwrap();
+    let eval_res = ctx.exec("main", &exec_ctx).unwrap();
+
+    let CelValue::TimeStamp(ts) = eval_res else {
+        panic!("now() should return a timestamp");
+    };
+
+    let now = Utc::now();
+    let delta = now.signed_duration_since(ts).num_seconds().abs();
+    assert!(delta <= 5, "now() delta too large: {delta}s");
 }
 
 #[test]
@@ -394,6 +551,30 @@ fn test_object_access_in_array() {
 }
 
 #[test]
+fn test_chained_index_on_binding() {
+    let mut ctx = CelContext::new();
+    let mut exec = BindContext::new();
+
+    // data = {"users": [{"name": "alice", "scores": [10, 20, 30]},
+    //                   {"name": "bob",   "scores": [40, 50, 60]}]}
+    let data: CelValue = serde_json::from_str::<Value>(
+        r#"{"users": [{"name": "alice", "scores": [10, 20, 30]},
+                      {"name": "bob",   "scores": [40, 50, 60]}]}"#,
+    )
+    .unwrap()
+    .into();
+    exec.bind_param("data", data);
+
+    ctx.add_program_str("user_name", "data['users'][1]['name']")
+        .unwrap();
+    ctx.add_program_str("score", "data['users'][0]['scores'][2]")
+        .unwrap();
+
+    assert_eq!(ctx.exec("user_name", &exec).unwrap(), "bob".into());
+    assert_eq!(ctx.exec("score", &exec).unwrap(), 30.into());
+}
+
+#[test]
 fn test_has_in_reduce() {
     let mut ctx = CelContext::new();
     let mut exec = BindContext::new();
@@ -458,6 +639,86 @@ fn test_timestamp_functions() {
 }
 
 #[test]
+#[allow(deprecated)]
+fn test_timestamp_set_functions() {
+    let mut ctx = CelContext::new();
+    let mut exec = BindContext::new();
+
+    let dt = Utc
+        .ymd(2024, 01, 10)
+        .and_hms_milli_opt(8, 57, 45, 123)
+        .unwrap();
+    exec.bind_param("time", CelValue::from_timestamp(dt));
+
+    let progs = [
+        (
+            "time.setFullYear(2025).toRfc3339()",
+            "2025-01-10T08:57:45.123+00:00",
+        ),
+        (
+            "time.setFullYear(2025, 'US/Pacific').toRfc3339()",
+            "2025-01-10T08:57:45.123+00:00",
+        ),
+        (
+            "time.setMonth(5).toRfc3339()",
+            "2024-06-10T08:57:45.123+00:00",
+        ),
+        (
+            "time.setMonth(5, 'US/Pacific').toRfc3339()",
+            "2024-06-10T07:57:45.123+00:00",
+        ),
+        (
+            "time.setDate(11).toRfc3339()",
+            "2024-01-11T08:57:45.123+00:00",
+        ),
+        (
+            "time.setDate(11, 'US/Pacific').toRfc3339()",
+            "2024-01-11T08:57:45.123+00:00",
+        ),
+        (
+            "time.setHours(2).toRfc3339()",
+            "2024-01-10T02:57:45.123+00:00",
+        ),
+        (
+            "time.setHours(5, 'US/Pacific').toRfc3339()",
+            "2024-01-10T13:57:45.123+00:00",
+        ),
+        (
+            "time.setMinutes(30).toRfc3339()",
+            "2024-01-10T08:30:45.123+00:00",
+        ),
+        (
+            "time.setMinutes(30, 'US/Pacific').toRfc3339()",
+            "2024-01-10T08:30:45.123+00:00",
+        ),
+        (
+            "time.setSeconds(9).toRfc3339()",
+            "2024-01-10T08:57:09.123+00:00",
+        ),
+        (
+            "time.setSeconds(9, 'US/Pacific').toRfc3339()",
+            "2024-01-10T08:57:09.123+00:00",
+        ),
+        (
+            "time.setMilliseconds(987).toRfc3339()",
+            "2024-01-10T08:57:45.987+00:00",
+        ),
+        (
+            "time.setMilliseconds(987, 'US/Pacific').toRfc3339()",
+            "2024-01-10T08:57:45.987+00:00",
+        ),
+    ];
+
+    for (prog, expected) in progs.iter() {
+        ctx.add_program_str("entry", prog).unwrap();
+
+        let res = ctx.exec("entry", &exec).unwrap();
+        println!("{}:{} == {}", prog, res, expected);
+        assert!(res == (*expected).into());
+    }
+}
+
+#[test]
 fn test_coalesce() {
     let mut ctx = CelContext::new();
     let mut exec = BindContext::new();
@@ -473,6 +734,41 @@ fn test_coalesce() {
     assert_eq!(ctx.exec("prog1", &exec).unwrap(), 4.into());
     assert_eq!(ctx.exec("prog2", &exec).unwrap(), 3.into());
     assert_eq!(ctx.exec("prog3", &exec).unwrap(), 3.into());
+}
+
+#[test]
+fn test_usage_running_example() {
+    let mut ctx = CelContext::new();
+    let mut exec = BindContext::new();
+
+    ctx.add_program_str("main", "greeting + ' ' + subject")
+        .unwrap();
+    exec.bind_param("greeting", "hello".into());
+    exec.bind_param("subject", "world".into());
+
+    let value = ctx.exec("main", &exec).unwrap();
+    assert_eq!(value, "hello world".into());
+}
+
+#[test]
+fn test_usage_putting_it_together_example() {
+    let mut ctx = CelContext::new();
+    let mut exec = BindContext::new();
+
+    let accounts = serde_json::from_str::<Value>(
+        r#"[{"id":"a1","balance_cents":150},{"id":"b2","balance_cents":0},{"id":"c3","balance_cents":250}]"#,
+    )
+    .unwrap();
+    exec.bind_param("accounts", accounts.into());
+
+    ctx.add_program_str(
+        "main",
+        "accounts.map(a, a.balance_cents > 0, {'id': a.id, 'balance': a.balance_cents / 100}).reduce(total, acct, total + acct.balance, 0)",
+    )
+    .unwrap();
+
+    let value = ctx.exec("main", &exec).unwrap();
+    assert_eq!(value, 3.into());
 }
 
 #[test]
@@ -528,4 +824,43 @@ fn test_keywords_as_access_idents() {
         Err(CelError::Attribute { .. }) => {}
         _ => panic!(),
     }
+}
+
+#[test]
+fn test_map_literal_member_access_const_folds() {
+    // {'a': 1}.a should be folded at compile time to a single Push(Int(1)),
+    // with no Access instruction emitted.
+    let prog = Program::from_source("{'a': 1}.a").unwrap();
+    let bc = prog.bytecode();
+
+    assert!(
+        !bc.iter().any(|op| matches!(op, ByteCode::Access)),
+        "expected no Access instruction, got:\n{}",
+        prog.dumps_bc()
+    );
+    assert_eq!(
+        bc.as_slice(),
+        &[ByteCode::Push(CelValue::Int(1))],
+        "expected single Push(Int(1)), got:\n{}",
+        prog.dumps_bc()
+    );
+}
+
+#[test]
+fn test_match_captures_all() {
+    let mut ctx = CelContext::new();
+    let exec_ctx = BindContext::new();
+
+    ctx.add_program_str("main", r#"'one1two2three3'.matchCapturesAll('([a-z]+)([0-9])')"#)
+        .unwrap();
+
+    let result = ctx.exec("main", &exec_ctx).unwrap();
+
+    let expected = CelValue::from_val_slice(&[
+        CelValue::from_val_slice(&["one1".into(), "one".into(), "1".into()]),
+        CelValue::from_val_slice(&["two2".into(), "two".into(), "2".into()]),
+        CelValue::from_val_slice(&["three3".into(), "three".into(), "3".into()]),
+    ]);
+
+    assert_eq!(result, expected);
 }
