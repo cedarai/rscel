@@ -1,0 +1,78 @@
+name: Pull request tests
+
+on:
+  pull_request:
+    branches: [main, develop]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rscel-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: nightly-2025-11-11
+
+jobs:
+  rust:
+    name: Rust and SQL tests
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install Rust and protoc
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          sudo apt-get update
+          sudo apt-get install --yes protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: Build workspace
+        run: cargo build --locked --workspace
+      - name: Test with protobuf fixtures
+        env:
+          RSCEL_TEST_PROTO: "1"
+        run: cargo test --locked -p rscel
+      - name: Test without default features
+        run: cargo test --locked -p rscel --no-default-features
+      - name: Test SQL extension
+        run: cargo test --locked -p rscel-to-sql
+
+  bindings:
+    name: Python and WebAssembly tests
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Rust and WebAssembly target
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and install Python stable-ABI wheel
+        run: |
+          python -m pip install "maturin>=1.9,<2" pytest protobuf
+          python -m maturin build --locked --manifest-path python/Cargo.toml --out "$RUNNER_TEMP/rscel-wheels"
+          python -m pip install "$RUNNER_TEMP"/rscel-wheels/*.whl
+      - name: Test Python bindings and comparison observations
+        run: python -m pytest test/test_rscel.py test/test_comparison_support.py -v
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked --version 0.15.1
+      - name: Build WebAssembly bindings
+        working-directory: wasm
+        run: wasm-pack build --target nodejs --locked
+      - name: Test WebAssembly bindings
+        run: |
+          npm ci --prefix wasm/tests --ignore-scripts --no-audit --no-fund
+          npm test --prefix wasm/tests

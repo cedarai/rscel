@@ -33,7 +33,10 @@ const DEFAULT_FUNCS: &[(&str, &'static RsCelFunction)] = &[
     ("matchReplace", &string::match_replace::match_replace),
     ("indexOf", &string::index_of::index_of),
     ("lastIndexOf", &string::index_of::last_index_of),
-    ("matchCapturesAll", &string::match_captures_all::match_captures_all),
+    (
+        "matchCapturesAll",
+        &string::match_captures_all::match_captures_all,
+    ),
     ("padEnd", &string::pad_end_impl),
     ("padStart", &string::pad_start_impl),
     ("repeat", &string::repeat::repeat),

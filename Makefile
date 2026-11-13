@@ -46,7 +46,7 @@ run-python-tests: .env python-binding
 	. .env/bin/activate && \
 	pip install --force-reinstall target/wheels/$(shell ls target/wheels) && \
 	cd test && \
-	python -m pytest test_rscel.py $(PYTEST_ARGS)
+	python -m pytest test_rscel.py test_comparison_support.py $(PYTEST_ARGS)
 
 run-all-python-tests: .env python-binding
 	. .env/bin/activate && \

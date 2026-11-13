@@ -151,6 +151,17 @@ impl CelValue {
         CelValue::TimeStamp(val)
     }
 
+    /// Native callers need not share this crate's private chrono version.
+    /// This preserves full timestamp precision,unlike serde's millisecond wire.
+    pub fn from_timestamp_text(value: &str) -> Result<CelValue, chrono::ParseError> {
+        value.parse::<DateTime<Utc>>().map(CelValue::TimeStamp)
+    }
+
+    /// Preserve the exact microsecond precision of Python timedelta bindings.
+    pub fn from_duration_micros(value: i64) -> CelValue {
+        CelValue::Duration(Duration::microseconds(value))
+    }
+
     pub fn from_duration(val: Duration) -> CelValue {
         CelValue::Duration(val)
     }

@@ -56,6 +56,10 @@ impl ProgramDetails {
         self.params.insert(name.to_owned());
     }
 
+    pub(crate) fn comparison_param_names(&self) -> impl Iterator<Item = &str> {
+        self.params.iter().map(String::as_str)
+    }
+
     pub fn params<'a>(&'a self) -> Vec<&'a str> {
         self.params.iter().map(|x| x.as_str()).collect()
     }
