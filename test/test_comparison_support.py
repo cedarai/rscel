@@ -69,14 +69,12 @@ def test_cached_clock_constant_keeps_the_original_value_without_replay():
 
 def test_observed_runtime_clock_keeps_normal_python_result():
     observations = []
-    assert (
-        rscel._eval_observed(
-            "x.now() != null",
-            {"x": 1},
-            lambda program, failed: observations.append((program, failed)),
-        )
-        is True
+    observed_result = rscel._eval_observed(
+        "x.now() != null",
+        {"x": 1},
+        lambda program, failed: observations.append((program, failed)),
     )
+    assert observed_result is True
     assert len(observations) == 1
     assert json.loads(observations[0][0])["version"] == 1
     assert observations[0][1] is False
