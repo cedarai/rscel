@@ -58,6 +58,8 @@ mod program;
 mod types;
 
 // Export some public interface
+pub mod clock;
+pub mod comparison;
 pub mod utils;
 pub use compiler::{
     ast_node::AstNode, compiler::CelCompiler, grammar::*, source_location::SourceLocation,

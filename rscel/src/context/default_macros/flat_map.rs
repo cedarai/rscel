@@ -1,7 +1,6 @@
 use super::helpers;
 use crate::interp::Interpreter;
 use crate::types::CelByteCode;
-use crate::utils::eval_ident;
 use crate::{CelError, CelValue};
 
 pub fn flat_map_impl(ctx: &Interpreter, this: CelValue, bytecode: &[&CelByteCode]) -> CelValue {
@@ -11,7 +10,7 @@ pub fn flat_map_impl(ctx: &Interpreter, this: CelValue, bytecode: &[&CelByteCode
         ));
     }
 
-    let ident_name = match eval_ident(bytecode[0]) {
+    let ident_name = match ctx.eval_ident(bytecode[0]) {
         Ok(name) => name,
         Err(err) => return err.into(),
     };
@@ -23,7 +22,7 @@ pub fn flat_map_impl(ctx: &Interpreter, this: CelValue, bytecode: &[&CelByteCode
 
             for value in list.into_iter() {
                 bindings.bind_param(&ident_name, value);
-                let interp = Interpreter::new(&cel, &bindings);
+                let interp = Interpreter::child(ctx, &cel, &bindings);
 
                 let mapped = match interp.run_raw(bytecode[1], true) {
                     Ok(val) => val,

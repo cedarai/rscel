@@ -50,6 +50,12 @@ impl PyCelProgram {
         }
     }
 
+    fn _comparison_json(&self) -> Option<String> {
+        self.program
+            .as_ref()
+            .and_then(crate::comparison_observer::program_json)
+    }
+
     fn serialize_to_json(slf: PyRefMut<'_, PyCelProgram>) -> PyResult<String> {
         if let Some(program) = &slf.program {
             match serde_json::to_string(&program) {

@@ -67,6 +67,84 @@ impl CelContext {
         interp.run_program(name)
     }
 
+    /// Cooperative deadline and one total instruction budget, including macros.
+    /// A CEL expression cannot mask exhaustion by treating its error as a value.
+    pub fn exec_bounded<'l>(
+        &'l self,
+        name: &str,
+        bindings: &'l BindContext,
+        instructions: usize,
+        deadline: std::time::Instant,
+    ) -> CelResult<CelValue> {
+        let mut interp = Interpreter::new(self, bindings);
+        interp.set_execution_budget(instructions, deadline);
+        let result = interp.run_program(name);
+        if let Some(error) = interp.execution_failure() {
+            return Err(error);
+        }
+        if interp.execution_budget_exhausted() || std::time::Instant::now() >= deadline {
+            return Err(crate::CelError::runtime("CEL execution budget exceeded"));
+        }
+        result
+    }
+
+    /// One shared budget for parser work,constant folding,macro identifiers and
+    /// runtime evaluation. Existing add_program_str/exec retain legacy semantics.
+    pub fn eval_bounded(
+        &mut self,
+        name: &str,
+        source: &str,
+        bindings: &BindContext,
+        instructions: usize,
+        deadline: std::time::Instant,
+    ) -> CelResult<CelValue> {
+        let budget = crate::interp::ExecutionBudget::new(instructions, deadline);
+        budget.admit_source(source)?;
+        let mut tokenizer = StringTokenizer::with_input(source);
+        let result = CelCompiler::with_tokenizer(&mut tokenizer)
+            .with_execution_budget(budget.clone())
+            .compile();
+        if let Some(error) = budget.failure() {
+            return Err(error);
+        }
+        if budget.exhausted() || std::time::Instant::now() >= deadline {
+            return Err(crate::CelError::runtime("CEL execution budget exceeded"));
+        }
+        self.add_program(name, result?);
+        let mut interp = Interpreter::new(self, bindings);
+        interp.set_budget_handle(budget.clone());
+        let result = interp.run_program(name);
+        if let Some(error) = budget.failure() {
+            return Err(error);
+        }
+        if budget.exhausted() || std::time::Instant::now() >= deadline {
+            return Err(crate::CelError::runtime("CEL execution budget exceeded"));
+        }
+        result
+    }
+
+    /// Bounded compilation for native bytecode-based compatibility rewrites.
+    /// It returns the actual typed Program;no serialized bytecode transport.
+    pub fn compile_bounded(
+        source: &str,
+        instructions: usize,
+        deadline: std::time::Instant,
+    ) -> CelResult<Program> {
+        let budget = crate::interp::ExecutionBudget::new(instructions, deadline);
+        budget.admit_source(source)?;
+        let mut tokenizer = StringTokenizer::with_input(source);
+        let result = CelCompiler::with_tokenizer(&mut tokenizer)
+            .with_execution_budget(budget.clone())
+            .compile();
+        if let Some(error) = budget.failure() {
+            return Err(error);
+        }
+        if budget.exhausted() || std::time::Instant::now() >= deadline {
+            return Err(crate::CelError::runtime("CEL execution budget exceeded"));
+        }
+        result
+    }
+
     // pub(crate) fn eval_expr(
     //     &mut self,
     //     expr: &Expr,

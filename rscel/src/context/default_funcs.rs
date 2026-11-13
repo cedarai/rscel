@@ -33,7 +33,10 @@ const DEFAULT_FUNCS: &[(&str, &'static RsCelFunction)] = &[
     ("matchReplace", &string::match_replace::match_replace),
     ("indexOf", &string::index_of::index_of),
     ("lastIndexOf", &string::index_of::last_index_of),
-    ("matchCapturesAll", &string::match_captures_all::match_captures_all),
+    (
+        "matchCapturesAll",
+        &string::match_captures_all::match_captures_all,
+    ),
     ("padEnd", &string::pad_end_impl),
     ("padStart", &string::pad_start_impl),
     ("repeat", &string::repeat::repeat),
@@ -217,5 +220,8 @@ fn now_impl(_this: CelValue, args: Vec<CelValue>) -> CelValue {
         return CelValue::from_err(CelError::argument("now() expects no arguments"));
     }
 
-    CelValue::from_timestamp(chrono::Utc::now())
+    match crate::clock::now() {
+        Ok(now) => CelValue::from_timestamp(now),
+        Err(error) => CelValue::from_err(error),
+    }
 }

@@ -21,6 +21,22 @@ pub enum CelError {
 pub type CelResult<T> = Result<T, CelError>;
 
 impl CelError {
+    /// Bytes copied by cloning this error's owned text, without formatting it.
+    pub(crate) fn owned_text_bytes(&self) -> Option<usize> {
+        Some(match self {
+            Self::Misc(s)
+            | Self::Value(s)
+            | Self::Argument(s)
+            | Self::InvalidOp(s)
+            | Self::Runtime(s)
+            | Self::Internal(s) => s.len(),
+            Self::Syntax(s) => s.message().map_or(0, str::len),
+            Self::Binding { symbol } => symbol.len(),
+            Self::Attribute { parent, field } => parent.len().checked_add(field.len())?,
+            Self::DivideByZero => 0,
+        })
+    }
+
     pub fn misc(msg: &str) -> CelError {
         CelError::Misc(msg.to_owned())
     }

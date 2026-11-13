@@ -55,3 +55,40 @@ assert_eq!(ctx.exec("main", &exec_ctx), 7.into());
 ```
 
 Build status: [![Rust](https://github.com/1BADragon/rscel/actions/workflows/rust.yml/badge.svg)](https://github.com/1BADragon/rscel/actions/workflows/rust.yml)
+
+## Cedar fork: bounded comparison support
+
+`CelContext::exec_bounded`, `eval_bounded` and `compile_bounded` opt into a
+cooperative deadline and shared instruction/resource accounting, including nested
+macros and compilation-time constant folding. Resource refusals remain sticky
+when an expression tries to mask an error. Bounded compilation admits at most
+512 KiB of source, 128 recursive AST boxes, 8 active full-expression levels and
+64 prefix-operator levels before parsing
+can recurse further. Owned error text is included in clone accounting.
+Normal `exec`, compilation and Python
+`eval` keep their existing semantics. These are cooperative guards, not hard
+process CPU or memory limits; caller-provided functions and provider graphs
+still require their own admission and lifetime controls.
+
+`clock::Scope` optionally observes actual default-clock reads on the current
+thread, or replays explicitly supplied operands in a bounded comparison. Scopes
+are nested and thread-confined. Observation never freezes the authoritative
+clock. Missing, extra or capped clock evidence is incomplete. A cached program
+can already contain a folded timestamp; executing it again must preserve that
+constant rather than read a fresh clock.
+Completion and finish apply only to the current scope's owner token. Finishing
+or dropping scopes out of order invalidates active evidence; stale later drops
+cannot restore an old replay or disturb a newly installed scope.
+
+`comparison::snapshot` and `restore` use a versioned, bounded internal format
+that preserves float bits and nanosecond temporal constants, including nested
+bytecode. This format is separate from the unchanged public JSON and bincode
+program formats. `CelValue::from_timestamp_text` and `from_duration_micros` let
+native callers construct precise values without sharing this crate's chrono
+version.
+
+Python's private `_eval_observed`, `_ClockObservation` and
+`CelProgram._comparison_json` expose the same evidence without replacing normal
+evaluation results or errors. Observer callback errors propagate to the caller,
+which must handle its own diagnostic failures and connection recovery. The
+existing CPython stable ABI floor remains 3.11.

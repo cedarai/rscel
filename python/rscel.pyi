@@ -13,6 +13,23 @@ CelBinding = dict[str, CelValue | CelCallable | Any]
 def eval(prog: str, binding: CelBinding) -> CelValue:
     ...
 
+# Internal comparison hooks; normal evaluation remains authoritative.
+_ClockValues = list[tuple[int, int]]
+
+def _eval_observed(
+    prog_str: str,
+    bindings: CelBinding,
+    observer: Callable[[str | None, _ClockValues | None], object],
+) -> CelValue:
+    ...
+
+class _ClockObservation:
+    def __init__(self):
+        ...
+
+    def finish(self) -> _ClockValues | None:
+        ...
+
 class CelProgram:
     def __init__(self):
         ...
@@ -27,6 +44,9 @@ class CelProgram:
         ...
 
     def serialize_to_json(self) -> str:
+        ...
+
+    def _comparison_json(self) -> str | None:
         ...
 
     def serialize_to_bincode(self) -> bytes:
@@ -52,7 +72,7 @@ class CelContext:
     def __init__(self):
         ...
 
-    def add_program_string(self, name: str, source: str):
+    def add_program_str(self, name: str, source: str):
         ...
 
     def add_program(self, name: str, prog: "CelProgram"):

@@ -1,7 +1,7 @@
 mod interp;
 mod types;
 
-pub use interp::Interpreter;
+pub use interp::{ExecutionBudget, Interpreter};
 pub use types::*;
 
 #[cfg(test)]
