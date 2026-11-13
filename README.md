@@ -69,6 +69,11 @@ when an expression tries to mask an error. Bounded compilation admits at most
 512 KiB of source, 128 recursive AST boxes, 8 active full-expression levels and
 64 prefix-operator levels before parsing
 can recurse further. Owned error text is included in clone accounting.
+Bounded runtime entries share an eight-entry active-depth guard across macro
+children, named-program references and isolated identifier evaluation. This
+corrects the earlier per-interpreter counter: recursive named programs could
+reset it through macro children and overflow the process stack. Depth refusal
+is sticky, and its owned scope is released on every return.
 Normal `exec`, compilation and Python
 `eval` keep their existing semantics. These are cooperative guards, not hard
 process CPU or memory limits; caller-provided functions and provider graphs

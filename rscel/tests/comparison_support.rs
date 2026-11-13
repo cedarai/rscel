@@ -328,3 +328,93 @@ fn documented_expression_and_ast_box_boundaries_compile_and_drop_successfully() 
     let over_limit = format!("{}1", "1+".repeat(128));
     assert!(CelContext::compile_bounded(&over_limit, 100_000, deadline()).is_err());
 }
+
+#[test]
+fn bounded_recursive_programs_refuse_without_overflowing_a_small_stack() {
+    for source in [
+        "p",
+        "p || true",
+        "[1].exists(x, p)",
+        "[1].all(x, p) || true",
+        "[1].map(x, p)",
+    ] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "bounded_recursive_program_child", "--nocapture"])
+            .env("RSCEL_RECURSION_CHILD_SOURCE", source)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{source}: child {:?}\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn bounded_recursive_program_child() {
+    let Ok(source) = std::env::var("RSCEL_RECURSION_CHILD_SOURCE") else {
+        return;
+    };
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(move || {
+            let mut context = CelContext::new();
+            context.add_program_str("p", &source).unwrap();
+            eprintln!("bounded recursion runtime start: {source}");
+            let error = context
+                .exec_bounded("p", &BindContext::new(), 1_000_000, deadline())
+                .unwrap_err();
+            assert!(error.to_string().contains("CEL resource limit exceeded"));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn bounded_execution_depth_unwinds_between_macro_items_and_new_executions() {
+    let mut context = CelContext::new();
+    context
+        .add_program_str("p", "[1].all(x, p) || true")
+        .unwrap();
+    let error = context
+        .exec_bounded("p", &BindContext::new(), 1_000_000, deadline())
+        .unwrap_err();
+    assert!(error.to_string().contains("CEL resource limit exceeded"));
+    context
+        .add_program_str("p", "xs.map(x, [x].exists(y, x == y)).all(v, v)")
+        .unwrap();
+    let mut bindings = BindContext::new();
+    bindings.bind_param("xs", CelValue::List((0..128).map(CelValue::Int).collect()));
+    let expected = context.exec("p", &bindings).unwrap();
+    assert_eq!(expected, CelValue::Bool(true));
+    for _ in 0..2 {
+        assert_eq!(
+            context
+                .exec_bounded("p", &bindings, 1_000_000, deadline())
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn bounded_depth_limit_does_not_change_unbounded_program_chains() {
+    let mut context = CelContext::new();
+    context.add_program_str("p12", "7").unwrap();
+    for n in (0..12).rev() {
+        context
+            .add_program_str(&format!("p{n}"), &format!("p{}", n + 1))
+            .unwrap();
+    }
+    let bindings = BindContext::new();
+    assert_eq!(context.exec("p0", &bindings).unwrap(), CelValue::Int(7));
+    let error = context
+        .exec_bounded("p0", &bindings, 1_000_000, deadline())
+        .unwrap_err();
+    assert!(error.to_string().contains("CEL resource limit exceeded"));
+    assert_eq!(context.exec("p0", &bindings).unwrap(), CelValue::Int(7));
+}

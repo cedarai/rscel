@@ -95,15 +95,16 @@ pub struct ExecutionBudget {
     heap_remaining: Rc<Cell<usize>>,
     refusal: Rc<Cell<Option<&'static str>>>,
     parser_depth: Rc<Cell<usize>>,
+    execution_depth: Rc<Cell<usize>>,
     prefix_depth: Rc<Cell<usize>>,
     ast_boxes_remaining: Rc<Cell<usize>>,
     deadline: Instant,
 }
 
-pub(crate) struct ParserDepth {
+pub(crate) struct DepthGuard {
     depth: Rc<Cell<usize>>,
 }
-impl Drop for ParserDepth {
+impl Drop for DepthGuard {
     fn drop(&mut self) {
         self.depth.set(self.depth.get() - 1);
     }
@@ -116,6 +117,7 @@ impl ExecutionBudget {
             heap_remaining: Rc::new(Cell::new(4 * 1024 * 1024)),
             refusal: Rc::new(Cell::new(None)),
             parser_depth: Rc::new(Cell::new(0)),
+            execution_depth: Rc::new(Cell::new(0)),
             prefix_depth: Rc::new(Cell::new(0)),
             ast_boxes_remaining: Rc::new(Cell::new(128)),
             deadline,
@@ -134,12 +136,18 @@ impl ExecutionBudget {
         }
         Ok(())
     }
-    pub(crate) fn enter_parser(&self) -> CelResult<ParserDepth> {
+    fn enter_execution(&self) -> CelResult<DepthGuard> {
+        // Macro children and identifier evaluation have fresh legacy counters.
+        // Bounded execution instead owns one active depth across every child.
+        // Keep debug-build frames safe on ordinary worker thread stacks.
+        self.enter_depth(&self.execution_depth, 8)
+    }
+    pub(crate) fn enter_parser(&self) -> CelResult<DepthGuard> {
         // Recursive-descent frames are large in unoptimized builds. Keep this
         // conservative on ordinary native test/worker thread stacks as well.
         self.enter_depth(&self.parser_depth, 8)
     }
-    pub(crate) fn enter_prefix(&self) -> CelResult<ParserDepth> {
+    pub(crate) fn enter_prefix(&self) -> CelResult<DepthGuard> {
         self.enter_depth(&self.prefix_depth, 64)
     }
     pub(crate) fn reserve_ast_box(&self) -> CelResult<()> {
@@ -150,13 +158,13 @@ impl ExecutionBudget {
         self.ast_boxes_remaining.set(left);
         Ok(())
     }
-    fn enter_depth(&self, depth: &Rc<Cell<usize>>, limit: usize) -> CelResult<ParserDepth> {
+    fn enter_depth(&self, depth: &Rc<Cell<usize>>, limit: usize) -> CelResult<DepthGuard> {
         self.charge()?;
         if depth.get() >= limit {
             self.refuse("CEL resource limit exceeded")?;
         }
         depth.set(depth.get() + 1);
-        Ok(ParserDepth {
+        Ok(DepthGuard {
             depth: Rc::clone(depth),
         })
     }
@@ -445,6 +453,11 @@ impl<'a> Interpreter<'a> {
     }
 
     pub fn run_raw(&self, prog: &CelByteCode, resolve: bool) -> CelResult<CelValue> {
+        let _execution_depth = self
+            .budget
+            .as_ref()
+            .map(ExecutionBudget::enter_execution)
+            .transpose()?;
         let mut pc: usize = 0;
         let mut stack = InterpStack::new(self);
 
