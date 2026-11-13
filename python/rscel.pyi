@@ -18,7 +18,7 @@ def eval(prog: str, binding: CelBinding) -> CelValue:
 def _eval_observed(
     prog_str: str,
     bindings: CelBinding,
-    observer: Callable[[str | None], object],
+    observer: Callable[[str | None, bool], object],
 ) -> CelValue:
     ...
 

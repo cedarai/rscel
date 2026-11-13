@@ -85,7 +85,7 @@ native callers construct precise values without sharing this crate's chrono
 version.
 
 Python's private `_eval_observed` and
-`CelProgram._comparison_json` expose the same evidence without replacing normal
+`CelProgram._comparison_json` expose program evidence and an explicit compile-failure flag without replacing normal
 evaluation results or errors. Observer callback errors propagate to the caller,
 which must handle its own diagnostic failures and connection recovery. The
 existing CPython stable ABI floor remains 3.11.

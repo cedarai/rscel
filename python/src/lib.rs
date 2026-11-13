@@ -64,7 +64,7 @@ fn eval_impl(
 
     if let Err(e) = ctx.add_program_str("entry", &prog_str) {
         if let Some(observer) = &observer {
-            observer.call1(py, (None::<String>,))?;
+            observer.call1(py, (None::<String>, true))?;
         }
         return Err(PyCelError::new(e).into());
     }
@@ -91,7 +91,7 @@ fn eval_impl(
     if let Some(observer) = observer {
         // Python collector suppresses ordinary diagnostic errors. A physical
         // connection loss must propagate to normal owner recovery.
-        observer.call1(py, (program,))?;
+        observer.call1(py, (program, false))?;
     }
 
     match res {
