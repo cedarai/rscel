@@ -220,8 +220,5 @@ fn now_impl(_this: CelValue, args: Vec<CelValue>) -> CelValue {
         return CelValue::from_err(CelError::argument("now() expects no arguments"));
     }
 
-    match crate::clock::now() {
-        Ok(now) => CelValue::from_timestamp(now),
-        Err(error) => CelValue::from_err(error),
-    }
+    CelValue::from_timestamp(chrono::Utc::now())
 }

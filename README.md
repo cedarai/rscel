@@ -70,15 +70,12 @@ Normal `exec`, compilation and Python
 process CPU or memory limits; caller-provided functions and provider graphs
 still require their own admission and lifetime controls.
 
-`clock::Scope` optionally observes actual default-clock reads on the current
-thread, or replays explicitly supplied operands in a bounded comparison. Scopes
-are nested and thread-confined. Observation never freezes the authoritative
-clock. Missing, extra or capped clock evidence is incomplete. A cached program
-can already contain a folded timestamp; executing it again must preserve that
-constant rather than read a fresh clock.
-Completion and finish apply only to the current scope's owner token. Finishing
-or dropping scopes out of order invalidates active evidence; stale later drops
-cannot restore an old replay or disturb a newly installed scope.
+Correction: the initial comparison design recorded and replayed individual clock
+reads. That machinery was removed because a diagnostic comparison does not need
+to reproduce every authoritative clock read. Callers can capture one comparison
+start time and leave unaligned time-sensitive cases unverified. Ordinary clock
+behavior is unchanged. Bounded evaluation refuses live `now` calls; a cached
+program's already-folded timestamp remains usable without reading a new clock.
 
 `comparison::snapshot` and `restore` use a versioned, bounded internal format
 that preserves float bits and nanosecond temporal constants, including nested
@@ -87,7 +84,7 @@ program formats. `CelValue::from_timestamp_text` and `from_duration_micros` let
 native callers construct precise values without sharing this crate's chrono
 version.
 
-Python's private `_eval_observed`, `_ClockObservation` and
+Python's private `_eval_observed` and
 `CelProgram._comparison_json` expose the same evidence without replacing normal
 evaluation results or errors. Observer callback errors propagate to the caller,
 which must handle its own diagnostic failures and connection recovery. The

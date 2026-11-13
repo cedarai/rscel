@@ -304,7 +304,7 @@ impl<'a> Interpreter<'a> {
             return Ok(());
         };
         budget.charge()?;
-        if name == "now" && !crate::clock::replaying() {
+        if name == "now" {
             return budget.refuse("CEL clock provenance unavailable");
         }
         let mut size = budget.value_cost(this, 0)?;

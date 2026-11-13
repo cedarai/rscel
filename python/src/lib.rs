@@ -13,7 +13,6 @@ use pyo3::{
 
 mod cel_py_object;
 mod celpycallable;
-mod comparison_observer;
 mod frompyobject;
 mod py_bind_context;
 mod py_cel_context;
@@ -65,7 +64,7 @@ fn eval_impl(
 
     if let Err(e) = ctx.add_program_str("entry", &prog_str) {
         if let Some(observer) = &observer {
-            observer.call1(py, (None::<String>, Some(Vec::<(i64, u32)>::new())))?;
+            observer.call1(py, (None::<String>,))?;
         }
         return Err(PyCelError::new(e).into());
     }
@@ -84,17 +83,15 @@ fn eval_impl(
         exec_ctx.bind_func(&callable.0, &callable.1);
     }
 
-    let scope = observer.as_ref().map(|_| rscel::clock::Scope::observe());
     let program = observer.as_ref().and_then(|_| {
         ctx.get_program("entry")
-            .and_then(comparison_observer::program_json)
+            .and_then(rscel::comparison::snapshot)
     });
     let res = ctx.exec("entry", &exec_ctx);
     if let Some(observer) = observer {
-        let clocks = scope.and_then(rscel::clock::Scope::finish);
         // Python collector suppresses ordinary diagnostic errors. A physical
         // connection loss must propagate to normal owner recovery.
-        observer.call1(py, (program, clocks))?;
+        observer.call1(py, (program,))?;
     }
 
     match res {
@@ -131,7 +128,6 @@ fn to_sql(py: Python<'_>, prog_str: String) -> PyResult<Py<PyString>> {
 fn rscel_module(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eval, m)?)?;
     m.add_function(wrap_pyfunction!(_eval_observed, m)?)?;
-    m.add_class::<comparison_observer::ClockObservation>()?;
     m.add_function(wrap_pyfunction!(to_sql, m)?)?;
     m.add_class::<PyCelContext>()?;
     m.add_class::<PyBindContext>()?;

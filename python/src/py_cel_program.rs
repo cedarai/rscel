@@ -51,9 +51,7 @@ impl PyCelProgram {
     }
 
     fn _comparison_json(&self) -> Option<String> {
-        self.program
-            .as_ref()
-            .and_then(crate::comparison_observer::program_json)
+        self.program.as_ref().and_then(rscel::comparison::snapshot)
     }
 
     fn serialize_to_json(slf: PyRefMut<'_, PyCelProgram>) -> PyResult<String> {

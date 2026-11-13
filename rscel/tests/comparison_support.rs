@@ -1,52 +1,9 @@
 //! Opt-in budgets and observation must preserve authoritative unbounded execution.
-use rscel::{clock, BindContext, CelContext, CelValue, Program};
+use rscel::{BindContext, CelContext, CelValue, Program};
 use std::time::{Duration, Instant};
 
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
-}
-
-#[test]
-fn outer_replay_cannot_report_an_inner_scopes_completion() {
-    let outer = clock::Scope::replay(vec![(1, 0)]).unwrap();
-    {
-        let inner = clock::Scope::replay(vec![]).unwrap();
-        assert!(!outer.complete());
-        assert!(inner.complete());
-    }
-    assert!(!outer.complete());
-    CelContext::new()
-        .eval_bounded("outer", "now()", &BindContext::new(), 100_000, deadline())
-        .unwrap();
-    assert!(outer.complete());
-}
-
-#[test]
-fn out_of_order_finish_does_not_return_another_scope_or_resurrect_stale_state() {
-    let outer = clock::Scope::observe();
-    let inner = clock::Scope::observe();
-    assert!(outer.finish().is_none());
-    assert!(!inner.complete());
-    assert!(inner.finish().is_none());
-    assert!(!clock::replaying());
-}
-
-#[test]
-fn dropping_an_outer_scope_invalidates_children_without_clobbering_a_new_scope() {
-    let outer = clock::Scope::replay(vec![(1, 0)]).unwrap();
-    let inner = clock::Scope::replay(vec![(2, 0)]).unwrap();
-    drop(outer);
-    assert!(!inner.complete());
-    let fresh = clock::Scope::observe();
-    drop(inner);
-    let mut context = CelContext::new();
-    context.add_program_str("fresh", "now()").unwrap();
-    let CelValue::TimeStamp(actual) = context.exec("fresh", &BindContext::new()).unwrap() else {
-        panic!("timestamp lost")
-    };
-    assert!(actual.timestamp() > 2);
-    assert_eq!(fresh.finish().unwrap().len(), 1);
-    assert!(!clock::replaying());
 }
 
 #[test]
@@ -184,70 +141,71 @@ fn large_binding_clones_are_admitted_before_allocation_and_cannot_be_masked() {
 }
 
 #[test]
-fn observation_records_live_clock_operands_and_replay_requires_exact_consumption() {
+fn live_clock_calls_are_unverified_only_for_bounded_evaluation() {
     let mut context = CelContext::new();
-    let observation = clock::Scope::observe();
-    context.add_program("clock", Program::from_source("now()").unwrap());
-    let CelValue::TimeStamp(actual) = context.exec("clock", &BindContext::new()).unwrap() else {
-        panic!("timestamp lost")
-    };
+    context.add_program_str("live", "x.now() != null").unwrap();
+    let mut bindings = BindContext::new();
+    bindings.bind_param("x", CelValue::Int(1));
     assert_eq!(
-        observation.finish().unwrap(),
-        vec![(actual.timestamp(), actual.timestamp_subsec_nanos())]
+        context.exec("live", &bindings).unwrap(),
+        CelValue::Bool(true)
     );
-    for clocks in [vec![(123, 456)], vec![], vec![(123, 456), (789, 1)]] {
-        let replay = clock::Scope::replay(clocks.clone()).unwrap();
-        let result = context.eval_bounded(
-            "replayed",
-            "now()",
-            &BindContext::new(),
-            100_000,
-            deadline(),
+    let error = context
+        .exec_bounded("live", &bindings, 100_000, deadline())
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("CEL clock provenance unavailable"));
+    assert_eq!(
+        context.exec("live", &bindings).unwrap(),
+        CelValue::Bool(true)
+    );
+}
+
+#[test]
+fn bounded_live_clocks_cannot_be_masked_in_compilation_or_nested_macros() {
+    for source in [
+        "now() != null",
+        "now() != null || true",
+        "[1,2,3].all(i, i.now() != null) || true",
+    ] {
+        let mut context = CelContext::new();
+        context.add_program_str("normal", source).unwrap();
+        assert_eq!(
+            context.exec("normal", &BindContext::new()).unwrap(),
+            CelValue::Bool(true)
         );
-        assert_eq!(replay.complete(), clocks.len() == 1);
-        if clocks.len() == 1 {
-            let CelValue::TimeStamp(actual) = result.unwrap() else {
-                panic!("timestamp lost")
-            };
-            assert_eq!(
-                (actual.timestamp(), actual.timestamp_subsec_nanos()),
-                (123, 456)
-            );
-        } else if clocks.is_empty() {
-            assert!(result.is_err());
-        }
+        let error = context
+            .eval_bounded("bounded", source, &BindContext::new(), 100_000, deadline())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("CEL clock provenance unavailable"),
+            "{source}: {error}"
+        );
+        assert_eq!(
+            context.exec("normal", &BindContext::new()).unwrap(),
+            CelValue::Bool(true)
+        );
     }
 }
 
 #[test]
-fn nested_scopes_restore_outer_observation_and_reject_invalid_replay() {
+fn cached_clock_constants_survive_snapshot_without_a_new_clock() {
     let mut context = CelContext::new();
-    let outer = clock::Scope::observe();
-    {
-        let replay = clock::Scope::replay(vec![(123, 456)]).unwrap();
-        context
-            .eval_bounded("clock", "now()", &BindContext::new(), 100_000, deadline())
-            .unwrap();
-        assert!(replay.complete());
-    }
-    context.add_program_str("outer_clock", "now()").unwrap();
-    context.exec("outer_clock", &BindContext::new()).unwrap();
-    assert_eq!(outer.finish().unwrap().len(), 1);
-    assert!(clock::Scope::replay(vec![(123, 0); 8_193]).is_err());
-    assert!(clock::Scope::replay(vec![(i64::MAX, u32::MAX)]).is_err());
-    assert!(!clock::replaying());
-}
-
-#[test]
-fn cached_clock_constants_do_not_read_a_new_clock_when_executed_again() {
-    let mut context = CelContext::new();
-    let compiled = clock::Scope::observe();
-    context.add_program_str("cached", "now()").unwrap();
+    let program = Program::from_source("now()").unwrap();
+    let snapshot = rscel::comparison::snapshot(&program).unwrap();
+    context.add_program("cached", program);
     let first = context.exec("cached", &BindContext::new()).unwrap();
-    assert_eq!(compiled.finish().unwrap().len(), 1);
-    let executed = clock::Scope::observe();
+    context.add_program("restored", rscel::comparison::restore(&snapshot).unwrap());
+    assert_eq!(
+        context
+            .exec_bounded("restored", &BindContext::new(), 100_000, deadline())
+            .unwrap(),
+        first
+    );
     assert_eq!(context.exec("cached", &BindContext::new()).unwrap(), first);
-    assert!(executed.finish().unwrap().is_empty());
 }
 
 #[cfg(test)]
