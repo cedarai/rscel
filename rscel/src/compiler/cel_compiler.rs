@@ -1167,6 +1167,15 @@ impl<'l> CelCompiler<'l> {
                                 },
                                 r,
                             ));
+                            member_prime_ast.push(AstNode::new(
+                                MemberPrime::Call {
+                                    call: AstNode::new(
+                                        ExprList { exprs: args_ast },
+                                        loc.surrounding(rparen_loc),
+                                    ),
+                                },
+                                loc.surrounding(rparen_loc),
+                            ));
                         } else {
                             member_prime_node = args_node
                                 .consume_child(member_prime_node)
