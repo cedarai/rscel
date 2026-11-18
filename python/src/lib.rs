@@ -35,6 +35,39 @@ fn eval(
     bindings: &Bound<PyDict>,
     runtime: Option<PyRef<'_, PyInterpRuntime>>,
 ) -> PyResult<Py<PyAny>> {
+    eval_impl(
+        py,
+        prog_str,
+        bindings,
+        None,
+        runtime.map(|rt| rt.inner().clone()),
+    )
+}
+
+#[pyfunction]
+#[pyo3(signature = (prog_str, bindings, observer, *, runtime=None))]
+fn _eval_observed(
+    py: Python<'_>,
+    prog_str: String,
+    bindings: &Bound<PyDict>,
+    observer: Py<PyAny>,
+    runtime: Option<PyRef<'_, PyInterpRuntime>>,
+) -> PyResult<Py<PyAny>> {
+    eval_impl(
+        py,
+        prog_str,
+        bindings,
+        Some(observer),
+        runtime.map(|rt| rt.inner().clone()),
+    )
+}
+fn eval_impl(
+    py: Python<'_>,
+    prog_str: String,
+    bindings: &Bound<PyDict>,
+    observer: Option<Py<PyAny>>,
+    runtime: Option<rscel::InterpRuntime>,
+) -> PyResult<Py<PyAny>> {
     let callables = {
         let mut callables = Vec::new();
         for keyobj in bindings.keys() {
@@ -51,6 +84,9 @@ fn eval(
     let mut exec_ctx = BindContext::new();
 
     if let Err(e) = ctx.add_program_str("entry", &prog_str) {
+        if let Some(observer) = &observer {
+            observer.call1(py, (None::<String>, true))?;
+        }
         return Err(PyCelError::new(e).into());
     }
 
@@ -73,9 +109,16 @@ fn eval(
         exec_ctx.bind_func(name, func);
     }
 
-    let res = ctx
-        .exec_with_rt("entry", &exec_ctx, runtime.map(|rt| rt.inner().clone()))
-        .0;
+    let program = observer.as_ref().and_then(|_| {
+        ctx.get_program("entry")
+            .and_then(rscel::comparison::snapshot)
+    });
+    let res = ctx.exec_with_rt("entry", &exec_ctx, runtime).0;
+    if let Some(observer) = observer {
+        // Python collector suppresses ordinary diagnostic errors. A physical
+        // connection loss must propagate to normal owner recovery.
+        observer.call1(py, (program, false))?;
+    }
 
     match res {
         Ok(res) => Ok(PyCelValue::new(res).into_pyobject_or_pyerr(py)?.unbind()),
@@ -110,6 +153,7 @@ fn to_sql(py: Python<'_>, prog_str: String) -> PyResult<Py<PyString>> {
 #[pyo3(name = "rscel")]
 fn rscel_module(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eval, m)?)?;
+    m.add_function(wrap_pyfunction!(_eval_observed, m)?)?;
     m.add_function(wrap_pyfunction!(to_sql, m)?)?;
     m.add_class::<PyCelContext>()?;
     m.add_class::<PyBindContext>()?;

@@ -31,7 +31,7 @@ pub fn reduce_impl(ctx: &Interpreter, this: CelValue, args: &[MacroArg]) -> CelV
                 bindings.bind_param(&next_name, next);
                 bindings.bind_param(&curr_name, cur_value);
 
-                let interp = Interpreter::new(&cel, &bindings);
+                let interp = Interpreter::child(ctx, &cel, &bindings);
                 cur_value = match args[2].eval(&interp) {
                     Ok(val) => val,
                     Err(err) => return err.into(),

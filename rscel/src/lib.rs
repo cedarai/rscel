@@ -1,3 +1,4 @@
+#![cfg_attr(test, recursion_limit = "1024")]
 //! RsCel is a CEL evaluator written in Rust. CEL is a google project that
 //! describes a turing-incomplete language that can be used to evaluate
 //! a user provdided expression. The language specification can be found
@@ -57,6 +58,7 @@ mod program;
 mod types;
 
 // Export some public interface
+pub mod comparison;
 pub mod utils;
 pub use compiler::{
     ast_node::AstNode, cel_compiler::CelCompiler, grammar::*, source_location::SourceLocation,

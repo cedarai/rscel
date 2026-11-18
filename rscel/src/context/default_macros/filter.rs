@@ -34,7 +34,7 @@ fn filter_list(
 
     for value in list.into_iter() {
         bindings.bind_param(ident_name, value.clone());
-        let interp = Interpreter::new(&cel, &bindings);
+        let interp = Interpreter::child(ctx, &cel, &bindings);
 
         let res = match predicate.eval(&interp) {
             Ok(val) => val,
@@ -61,7 +61,7 @@ fn filter_map(
     for key in map.into_keys() {
         let value: CelValue = key.into();
         bindings.bind_param(ident_name, value.clone());
-        let interp = Interpreter::new(&cel, &bindings);
+        let interp = Interpreter::child(ctx, &cel, &bindings);
 
         let res = match predicate.eval(&interp) {
             Ok(val) => val,

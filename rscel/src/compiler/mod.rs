@@ -9,3 +9,6 @@ pub mod string_tokenizer;
 pub mod syntax_error;
 pub mod tokenizer;
 pub mod tokens;
+
+#[cfg(test)]
+mod bounded_parser_tests;

@@ -2,7 +2,7 @@ mod interpreter;
 mod runtime;
 mod types;
 
-pub use interpreter::Interpreter;
+pub use interpreter::{ExecutionBudget, Interpreter};
 pub use types::*;
 
 pub use runtime::{runtime_start_time, InterpRuntime};

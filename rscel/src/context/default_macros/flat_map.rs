@@ -22,7 +22,7 @@ pub fn flat_map_impl(ctx: &Interpreter, this: CelValue, args: &[MacroArg]) -> Ce
 
             for value in list.into_iter() {
                 bindings.bind_param(&ident_name, value);
-                let interp = Interpreter::new(&cel, &bindings);
+                let interp = Interpreter::child(ctx, &cel, &bindings);
 
                 let mapped = match args[1].eval(&interp) {
                     Ok(val) => val,

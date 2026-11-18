@@ -10,32 +10,51 @@ use super::{
     grammar::*,
     source_range::SourceRange,
     syntax_error::SyntaxError,
-    tokenizer::{TokenWithLoc, Tokenizer},
+    tokenizer::{BudgetedTokenizer, TokenWithLoc, Tokenizer},
     tokens::{AsToken, FStringSegment, IntoToken, Token},
 };
 use crate::{
     context::DEFAULT_FUNCS,
-    interp::{Interpreter, JmpWhen},
+    interp::{ExecutionBudget, Interpreter, JmpWhen},
     BindContext, ByteCode, CelError, CelResult, CelValue, CelValueDyn, Program, ProgramDetails,
     StringTokenizer,
 };
 
 use crate::compile;
 
+// Bound recursive AST ownership as well as recursive parser calls. The shared
+// box budget includes nested/f-string compilers and refuses before allocation.
+macro_rules! ast_box {
+    ($compiler:expr, $value:expr) => {{
+        if let Some(budget) = &$compiler.execution_budget {
+            budget.reserve_ast_box()?;
+        }
+        Box::new($value)
+    }};
+}
+
 pub struct CelCompiler<'l> {
-    tokenizer: &'l mut dyn Tokenizer,
+    tokenizer: BudgetedTokenizer<'l>,
     bindings: BindContext<'l>,
 
     next_label: u32,
+    execution_budget: Option<ExecutionBudget>,
 }
 
 impl<'l> CelCompiler<'l> {
     pub fn with_tokenizer(tokenizer: &'l mut dyn Tokenizer) -> Self {
         CelCompiler {
-            tokenizer,
+            tokenizer: BudgetedTokenizer::new(tokenizer),
             bindings: BindContext::for_compile(),
             next_label: 0,
+            execution_budget: None,
         }
+    }
+
+    pub(crate) fn with_execution_budget(mut self, budget: ExecutionBudget) -> Self {
+        self.tokenizer.set_budget(budget.clone());
+        self.execution_budget = Some(budget);
+        self
     }
 
     pub fn compile(mut self) -> CelResult<Program> {
@@ -60,6 +79,11 @@ impl<'l> CelCompiler<'l> {
     }
 
     fn parse_expression(&mut self) -> CelResult<(CompiledProg, AstNode<Expr>)> {
+        let _depth = self
+            .execution_budget
+            .as_ref()
+            .map(ExecutionBudget::enter_parser)
+            .transpose()?;
         if let Some(Token::Match) = self.tokenizer.peek()?.as_token() {
             self.tokenizer.next()?;
             self.parse_match_expression()
@@ -75,7 +99,7 @@ impl<'l> CelCompiler<'l> {
                     let range = lhs_ast.range();
                     Ok((
                         CompiledProg::from_node(lhs_node),
-                        AstNode::new(Expr::Unary(Box::new(lhs_ast)), range),
+                        AstNode::new(Expr::Unary(ast_box!(self, lhs_ast)), range),
                     ))
                 }
             }
@@ -179,9 +203,9 @@ impl<'l> CelCompiler<'l> {
             turnary_node,
             AstNode::new(
                 Expr::Ternary {
-                    condition: Box::new(or_ast),
-                    true_clause: Box::new(true_clause_ast),
-                    false_clause: Box::new(false_clause_ast),
+                    condition: ast_box!(self, or_ast),
+                    true_clause: ast_box!(self, true_clause_ast),
+                    false_clause: ast_box!(self, false_clause_ast),
                 },
                 range,
             ),
@@ -264,7 +288,7 @@ impl<'l> CelCompiler<'l> {
             expressions.push(AstNode::new(
                 MatchCase {
                     pattern: pattern_ast,
-                    expr: Box::new(expr_ast),
+                    expr: ast_box!(self, expr_ast),
                 },
                 case_range,
             ));
@@ -310,7 +334,7 @@ impl<'l> CelCompiler<'l> {
             CompiledProg::new(NodeValue::Bytecode(node_bytecode), node_details),
             AstNode::new(
                 Expr::Match {
-                    condition: Box::new(condition_ast),
+                    condition: ast_box!(self, condition_ast),
                     cases: expressions,
                 },
                 range,
@@ -386,7 +410,7 @@ impl<'l> CelCompiler<'l> {
             AstNode::new(
                 MatchPattern::Cmp {
                     op: AstNode::new(prefix_pattern.as_ast(), op_range),
-                    or: Box::new(or_ast),
+                    or: ast_box!(self, or_ast),
                 },
                 SourceRange::new(start, self.tokenizer.location()),
             ),
@@ -415,7 +439,7 @@ impl<'l> CelCompiler<'l> {
 
             current_ast = AstNode::new(
                 ConditionalOr::Binary {
-                    lhs: Box::new(current_ast),
+                    lhs: ast_box!(self, current_ast),
                     rhs: rhs_ast,
                 },
                 range,
@@ -456,7 +480,7 @@ impl<'l> CelCompiler<'l> {
 
             current_ast = AstNode::new(
                 ConditionalAnd::Binary {
-                    lhs: Box::new(current_ast),
+                    lhs: ast_box!(self, current_ast),
                     rhs: rhs_ast,
                 },
                 range,
@@ -487,7 +511,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Relation::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: Relop::Lt,
                             rhs: rhs_ast,
                         },
@@ -508,7 +532,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Relation::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: Relop::Le,
                             rhs: rhs_ast,
                         },
@@ -529,7 +553,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Relation::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: Relop::Eq,
                             rhs: rhs_ast,
                         },
@@ -550,7 +574,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Relation::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: Relop::Ne,
                             rhs: rhs_ast,
                         },
@@ -571,7 +595,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Relation::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: Relop::Ge,
                             rhs: rhs_ast,
                         },
@@ -592,7 +616,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Relation::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: Relop::Gt,
                             rhs: rhs_ast,
                         },
@@ -613,7 +637,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Relation::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: Relop::In,
                             rhs: rhs_ast,
                         },
@@ -646,7 +670,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Addition::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: AddOp::Add,
                             rhs: rhs_ast,
                         },
@@ -668,7 +692,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Addition::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: AddOp::Sub,
                             rhs: rhs_ast,
                         },
@@ -702,7 +726,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Multiplication::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: MultOp::Mult,
                             rhs: rhs_ast,
                         },
@@ -723,7 +747,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Multiplication::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: MultOp::Div,
                             rhs: rhs_ast,
                         },
@@ -745,7 +769,7 @@ impl<'l> CelCompiler<'l> {
 
                     current_ast = AstNode::new(
                         Multiplication::Binary {
-                            lhs: Box::new(current_ast),
+                            lhs: ast_box!(self, current_ast),
                             op: MultOp::Mod,
                             rhs: rhs_ast,
                         },
@@ -863,7 +887,7 @@ impl<'l> CelCompiler<'l> {
 
                     let neg_ast = AstNode::new(
                         NegList::List {
-                            tail: Box::new(AstNode::new(NegList::EmptyList, minus_loc)),
+                            tail: ast_box!(self, AstNode::new(NegList::EmptyList, minus_loc)),
                         },
                         minus_loc,
                     );
@@ -888,7 +912,7 @@ impl<'l> CelCompiler<'l> {
 
                 let neg_ast = AstNode::new(
                     NegList::List {
-                        tail: Box::new(rest_ast),
+                        tail: ast_box!(self, rest_ast),
                     },
                     minus_loc,
                 );
@@ -916,6 +940,11 @@ impl<'l> CelCompiler<'l> {
                 token: Token::Not,
                 loc,
             }) => {
+                let _depth = self
+                    .execution_budget
+                    .as_ref()
+                    .map(ExecutionBudget::enter_prefix)
+                    .transpose()?;
                 self.tokenizer.next()?;
 
                 let (not_list, ast) = self.parse_not_list()?;
@@ -927,7 +956,7 @@ impl<'l> CelCompiler<'l> {
                     node,
                     AstNode::new(
                         NotList::List {
-                            tail: Box::new(ast),
+                            tail: ast_box!(self, ast),
                         },
                         range,
                     ),
@@ -949,6 +978,11 @@ impl<'l> CelCompiler<'l> {
                 token: Token::Minus,
                 loc,
             }) => {
+                let _depth = self
+                    .execution_budget
+                    .as_ref()
+                    .map(ExecutionBudget::enter_prefix)
+                    .transpose()?;
                 self.tokenizer.next()?;
 
                 let (neg_list, ast) = self.parse_neg_list()?;
@@ -960,7 +994,7 @@ impl<'l> CelCompiler<'l> {
                     node,
                     AstNode::new(
                         NegList::List {
-                            tail: Box::new(ast),
+                            tail: ast_box!(self, ast),
                         },
                         range,
                     ),
@@ -1100,6 +1134,7 @@ impl<'l> CelCompiler<'l> {
 
                         // Validate argument shapes for known default macros at compile time.
                         if let Some((ref ident, _)) = last_ident {
+                            self.admit_comparison_call(ident)?;
                             Self::validate_macro_args(ident, &resolved_args, loc)?;
 
                             // Macro binders (e.g. `x` in `list.map(x, x + 1)`) are loop
@@ -1140,6 +1175,7 @@ impl<'l> CelCompiler<'l> {
                         // `f(f)` still reports the argument, and keeps the impure flag.
                         if last_ident.is_none() && member_prime_ast.is_empty() {
                             if let Primary::Ident(Ident(callee)) = primary_ast.node() {
+                                self.admit_comparison_call(callee)?;
                                 member_prime_node.details_mut().remove_param(callee);
                             }
                         }
@@ -1570,6 +1606,9 @@ impl<'l> CelCompiler<'l> {
                         FStringSegment::Expr(e) => {
                             let mut tok = StringTokenizer::with_input(e);
                             let mut comp = CelCompiler::with_tokenizer(&mut tok);
+                            if let Some(budget) = &self.execution_budget {
+                                comp = comp.with_execution_budget(budget.clone());
+                            }
 
                             let (e, _) = comp.parse_expression()?;
 
@@ -1756,6 +1795,15 @@ impl<'l> CelCompiler<'l> {
         Ok(())
     }
 
+    fn admit_comparison_call(&self, name: &str) -> CelResult<()> {
+        if matches!(name, "now" | "clockNow") {
+            if let Some(budget) = &self.execution_budget {
+                return budget.refuse("CEL clock provenance unavailable");
+            }
+        }
+        Ok(())
+    }
+
     fn check_for_const(&self, member_prime_node: CompiledProg) -> CompiledProg {
         if member_prime_node.details().impure() {
             return member_prime_node;
@@ -1763,6 +1811,9 @@ impl<'l> CelCompiler<'l> {
 
         let mut i = Interpreter::empty();
         i.add_bindings(&self.bindings);
+        if let Some(budget) = &self.execution_budget {
+            i.set_budget_handle(budget.clone());
+        }
 
         let (c, d) = member_prime_node.into_parts();
 
