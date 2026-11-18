@@ -4,6 +4,57 @@ use super::{
     source_range::SourceRange,
     tokens::{AsToken, IntoToken, Token},
 };
+use crate::interp::ExecutionBudget;
+
+/// A consumed token is charged once, even when the parser peeks repeatedly.
+/// The default compiler delegates without installing any execution budget.
+pub(crate) struct BudgetedTokenizer<'a> {
+    inner: &'a mut dyn Tokenizer,
+    budget: Option<ExecutionBudget>,
+    peek_charged: bool,
+}
+
+impl<'a> BudgetedTokenizer<'a> {
+    pub(crate) fn new(inner: &'a mut dyn Tokenizer) -> Self {
+        Self {
+            inner,
+            budget: None,
+            peek_charged: false,
+        }
+    }
+    pub(crate) fn set_budget(&mut self, budget: ExecutionBudget) {
+        self.budget = Some(budget);
+    }
+    fn charge_pending(&mut self) -> Result<(), SyntaxError> {
+        if !self.peek_charged {
+            if let Some(budget) = &self.budget {
+                budget.charge().map_err(|_| {
+                    SyntaxError::from_location(self.inner.location())
+                        .with_message("Bounded compilation stopped".into())
+                })?;
+            }
+            self.peek_charged = true;
+        }
+        Ok(())
+    }
+}
+impl Tokenizer for BudgetedTokenizer<'_> {
+    fn peek(&mut self) -> Result<Option<&TokenWithLoc>, SyntaxError> {
+        self.charge_pending()?;
+        self.inner.peek()
+    }
+    fn next(&mut self) -> Result<Option<TokenWithLoc>, SyntaxError> {
+        self.charge_pending()?;
+        self.peek_charged = false;
+        self.inner.next()
+    }
+    fn source(&self) -> &str {
+        self.inner.source()
+    }
+    fn location(&self) -> SourceLocation {
+        self.inner.location()
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct TokenWithLoc {

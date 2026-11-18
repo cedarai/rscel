@@ -22,7 +22,7 @@ pub fn exists_one_impl(ctx: &Interpreter, this: CelValue, args: &[MacroArg]) -> 
 
             for value in list.into_iter() {
                 bindings.bind_param(&ident_name, value.clone());
-                let interp = Interpreter::new(&cel, &bindings);
+                let interp = Interpreter::child(ctx, &cel, &bindings);
 
                 let res = match args[1].eval(&interp) {
                     Ok(val) => val,
