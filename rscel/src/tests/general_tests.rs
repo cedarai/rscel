@@ -1146,3 +1146,52 @@ fn test_exec_with_rt_nested_explicit_runtime_wins_and_restores() {
     );
     assert_eq!(rt.start_time(), outer_start);
 }
+
+#[test]
+fn method_macro_ast_preserves_argument_bodies_and_complete_source_ranges() {
+    fn collect_arities(value: &serde_json::Value, arities: &mut Vec<usize>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if let Some(args) = fields
+                    .get("Call")
+                    .and_then(|call| call.pointer("/call/node/exprs"))
+                    .and_then(|args| args.as_array())
+                {
+                    arities.push(args.len());
+                }
+                for child in fields.values() {
+                    collect_arities(child, arities);
+                }
+            }
+            serde_json::Value::Array(children) => {
+                for child in children {
+                    collect_arities(child, arities);
+                }
+            }
+            _ => (),
+        }
+    }
+    for (source, expected) in [
+        ("items.map(x, x + 1)", vec![2]),
+        ("items.map(x, x > 1, x + 1)", vec![3]),
+        (
+            "items.exists(x, x.children.all(y, y.name == 'x'))",
+            vec![2, 2],
+        ),
+    ] {
+        let program = Program::from_source(source).unwrap();
+        let ast = program.ast().unwrap();
+        assert_eq!(
+            ast.range().end().col(),
+            source.len(),
+            "method call range omitted arguments: {source}"
+        );
+        let mut arities = Vec::new();
+        collect_arities(&serde_json::to_value(ast).unwrap(), &mut arities);
+        arities.sort();
+        assert_eq!(
+            arities, expected,
+            "method macro body missing from AST: {source}"
+        );
+    }
+}
